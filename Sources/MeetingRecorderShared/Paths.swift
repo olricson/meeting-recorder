@@ -24,6 +24,9 @@ public struct RecorderPaths: Sendable {
     public var lockFile: URL { applicationSupportDirectory.appendingPathComponent("recorder.lock") }
     public var socketFile: URL { applicationSupportDirectory.appendingPathComponent("control.sock") }
     public var logFile: URL { logsDirectory.appendingPathComponent("meeting-recorder.log") }
+    public var transcriptionModelsDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("Models", isDirectory: true)
+    }
 
     public func createBaseDirectories() throws {
         let manager = FileManager.default
@@ -85,27 +88,68 @@ public final class ConfigurationStore: @unchecked Sendable {
     public init(paths: RecorderPaths) { self.paths = paths }
 
     public func load() throws -> RecorderConfiguration {
+        try queue.sync { try loadUnlocked() }
+    }
+
+    @discardableResult
+    public func setOutputDirectory(_ path: String) throws -> RecorderConfiguration {
+        try set(.outputDirectory, value: path)
+    }
+
+    @discardableResult
+    public func set(_ key: RecorderConfigurationKey, value: String) throws -> RecorderConfiguration {
         try queue.sync {
-            if FileManager.default.fileExists(atPath: paths.configFile.path) {
-                return try AtomicJSONStore.load(RecorderConfiguration.self, from: paths.configFile)
+            var configuration = try loadUnlocked()
+            switch key {
+            case .outputDirectory:
+                let url = paths.expandPath(value)
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                guard FileManager.default.isWritableFile(atPath: url.path) else {
+                    throw MeetingRecorderError.io("Output directory is not writable: \(url.path)")
+                }
+                configuration.outputDirectory = url.path
+            case .transcriptionModel:
+                let model = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !model.isEmpty else {
+                    throw MeetingRecorderError.invalidArgument("transcription-model cannot be empty.")
+                }
+                configuration.transcriptionModel = model
+            case .minimumDuration:
+                guard let duration = TimeInterval(value), duration.isFinite, duration >= 0 else {
+                    throw MeetingRecorderError.invalidArgument("minimum-duration must be a nonnegative number of seconds.")
+                }
+                configuration.minimumDuration = duration
+            case .language:
+                guard let language = TranscriptionLanguage(rawValue: value.lowercased()) else {
+                    throw MeetingRecorderError.invalidArgument("language must be auto, en, or fr.")
+                }
+                configuration.language = language
+            case .diarization:
+                switch value.lowercased() {
+                case "true", "yes", "on", "1": configuration.diarizationEnabled = true
+                case "false", "no", "off", "0": configuration.diarizationEnabled = false
+                default: throw MeetingRecorderError.invalidArgument("diarization must be true or false.")
+                }
+            case .speakerCount:
+                if value.lowercased() == "auto" {
+                    configuration.speakerCount = nil
+                } else if let count = Int(value), (1...20).contains(count) {
+                    configuration.speakerCount = count
+                } else {
+                    throw MeetingRecorderError.invalidArgument("speaker-count must be auto or an integer from 1 through 20.")
+                }
             }
-            let configuration = RecorderConfiguration(outputDirectory: paths.defaultOutputDirectory.path)
             try AtomicJSONStore.save(configuration, to: paths.configFile)
             return configuration
         }
     }
 
-    @discardableResult
-    public func setOutputDirectory(_ path: String) throws -> RecorderConfiguration {
-        try queue.sync {
-            let url = paths.expandPath(path)
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            guard FileManager.default.isWritableFile(atPath: url.path) else {
-                throw MeetingRecorderError.io("Output directory is not writable: \(url.path)")
-            }
-            let configuration = RecorderConfiguration(outputDirectory: url.path)
-            try AtomicJSONStore.save(configuration, to: paths.configFile)
-            return configuration
+    private func loadUnlocked() throws -> RecorderConfiguration {
+        if FileManager.default.fileExists(atPath: paths.configFile.path) {
+            return try AtomicJSONStore.load(RecorderConfiguration.self, from: paths.configFile)
         }
+        let configuration = RecorderConfiguration(outputDirectory: paths.defaultOutputDirectory.path)
+        try AtomicJSONStore.save(configuration, to: paths.configFile)
+        return configuration
     }
 }

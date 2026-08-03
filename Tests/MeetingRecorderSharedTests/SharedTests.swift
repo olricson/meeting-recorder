@@ -10,6 +10,25 @@ final class SharedTests: XCTestCase {
         let decoded = try JSONDecoder().decode(IPCRequest.self, from: data)
         XCTAssertEqual(decoded.version, 1)
         XCTAssertEqual(decoded.command, .start(.bundleIdentifier("com.google.Chrome")))
+
+        let transcribeRequest = IPCRequest(command: .transcribeFile("/tmp/meeting.m4a"))
+        let transcribeData = try JSONEncoder().encode(transcribeRequest)
+        let decodedTranscribe = try JSONDecoder().decode(IPCRequest.self, from: transcribeData)
+        XCTAssertEqual(decodedTranscribe.command, .transcribeFile("/tmp/meeting.m4a"))
+
+        let configRequest = IPCRequest(command: .configSet(.language, "fr"))
+        let configData = try JSONEncoder().encode(configRequest)
+        let decodedConfig = try JSONDecoder().decode(IPCRequest.self, from: configData)
+        XCTAssertEqual(decodedConfig.command, .configSet(.language, "fr"))
+    }
+
+    func testRecorderStateFromOlderBuildDecodesWithoutTranscriptPath() throws {
+        let data = Data(#"{"schemaVersion":1,"phase":"idle","metrics":{"lateFrames":0,"gapFrames":0,"overlapFrames":0,"clippedSamples":0,"writerBackpressureEvents":0}}"#.utf8)
+        let state = try JSONDecoder().decode(RecorderState.self, from: data)
+
+        XCTAssertEqual(state.phase, .idle)
+        XCTAssertNil(state.transcriptionInputPath)
+        XCTAssertNil(state.transcriptPath)
     }
 
     func testConfigurationUsesLocalMeetingsDirectory() throws {
@@ -22,6 +41,11 @@ final class SharedTests: XCTestCase {
         let configuration = try store.load()
         XCTAssertEqual(configuration.outputDirectory, temporary.appendingPathComponent("Meetings Recordings").path)
         XCTAssertFalse(configuration.outputDirectory.contains("Documents"))
+        XCTAssertEqual(configuration.transcriptionModel, RecorderConfiguration.defaultTranscriptionModel)
+        XCTAssertEqual(configuration.minimumDuration, 30)
+        XCTAssertEqual(configuration.language, .automatic)
+        XCTAssertTrue(configuration.diarizationEnabled)
+        XCTAssertNil(configuration.speakerCount)
     }
 
     func testConfiguredPathExpandsTilde() throws {
@@ -32,6 +56,37 @@ final class SharedTests: XCTestCase {
         try paths.createBaseDirectories()
         let configuration = try ConfigurationStore(paths: paths).setOutputDirectory("~/Private Meetings")
         XCTAssertEqual(configuration.outputDirectory, temporary.appendingPathComponent("Private Meetings").path)
+    }
+
+    func testConfigurationStoreValidatesAndPersistsTranscriptionSettings() throws {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MeetingRecorderConfigTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let store = ConfigurationStore(paths: RecorderPaths(homeDirectory: temporary))
+
+        _ = try store.set(.transcriptionModel, value: "small-model")
+        _ = try store.set(.minimumDuration, value: "12.5")
+        _ = try store.set(.language, value: "fr")
+        _ = try store.set(.diarization, value: "false")
+        let configuration = try store.set(.speakerCount, value: "3")
+
+        XCTAssertEqual(configuration.transcriptionModel, "small-model")
+        XCTAssertEqual(configuration.minimumDuration, 12.5)
+        XCTAssertEqual(configuration.language, .french)
+        XCTAssertFalse(configuration.diarizationEnabled)
+        XCTAssertEqual(configuration.speakerCount, 3)
+        XCTAssertThrowsError(try store.set(.speakerCount, value: "21"))
+        XCTAssertThrowsError(try store.set(.language, value: "de"))
+    }
+
+    func testLegacyConfigurationReceivesNewDefaults() throws {
+        let data = Data(#"{"schemaVersion":1,"outputDirectory":"/tmp/meetings"}"#.utf8)
+        let configuration = try JSONDecoder().decode(RecorderConfiguration.self, from: data)
+
+        XCTAssertEqual(configuration.schemaVersion, RecorderConfiguration.schemaVersion)
+        XCTAssertEqual(configuration.minimumDuration, 30)
+        XCTAssertEqual(configuration.language, .automatic)
+        XCTAssertTrue(configuration.diarizationEnabled)
     }
 
     func testUnixSocketRequestResponse() throws {

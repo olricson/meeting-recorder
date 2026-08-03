@@ -34,6 +34,27 @@ staging="$dist_dir/.MeetingRecorder.app.staging.$$"
 if [[ -e "$staging" ]]; then /bin/rm -rf "$staging"; fi
 /bin/mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Helpers" "$staging/Contents/Resources"
 /bin/cp "$repo_dir/AppResources/Info.plist" "$staging/Contents/Info.plist"
+/bin/cp "$repo_dir/AppResources/ThirdPartyNotices.txt" "$staging/Contents/Resources/ThirdPartyNotices.txt"
+icon_source="$repo_dir/icone.png"
+iconset="$repo_dir/.build/MeetingRecorder.iconset"
+if [[ ! -f "$icon_source" ]]; then
+  print -u2 "App icon not found at repository root: $icon_source"
+  exit 1
+fi
+if [[ -e "$iconset" ]]; then /bin/rm -rf "$iconset"; fi
+/bin/mkdir -p "$iconset"
+/usr/bin/sips -z 16 16 "$icon_source" --out "$iconset/icon_16x16.png" >/dev/null
+/usr/bin/sips -z 32 32 "$icon_source" --out "$iconset/icon_16x16@2x.png" >/dev/null
+/usr/bin/sips -z 32 32 "$icon_source" --out "$iconset/icon_32x32.png" >/dev/null
+/usr/bin/sips -z 64 64 "$icon_source" --out "$iconset/icon_32x32@2x.png" >/dev/null
+/usr/bin/sips -z 128 128 "$icon_source" --out "$iconset/icon_128x128.png" >/dev/null
+/usr/bin/sips -z 256 256 "$icon_source" --out "$iconset/icon_128x128@2x.png" >/dev/null
+/usr/bin/sips -z 256 256 "$icon_source" --out "$iconset/icon_256x256.png" >/dev/null
+/usr/bin/sips -z 512 512 "$icon_source" --out "$iconset/icon_256x256@2x.png" >/dev/null
+/usr/bin/sips -z 512 512 "$icon_source" --out "$iconset/icon_512x512.png" >/dev/null
+/usr/bin/sips -z 1024 1024 "$icon_source" --out "$iconset/icon_512x512@2x.png" >/dev/null
+/usr/bin/iconutil -c icns "$iconset" -o "$staging/Contents/Resources/MeetingRecorder.icns"
+/bin/rm -rf "$iconset"
 /bin/cp "$bin_dir/MeetingRecorderAgent" "$staging/Contents/MacOS/MeetingRecorderAgent"
 /bin/cp "$bin_dir/meeting-recorder" "$staging/Contents/Helpers/meeting-recorder"
 /bin/chmod 755 "$staging/Contents/MacOS/MeetingRecorderAgent" "$staging/Contents/Helpers/meeting-recorder"
@@ -47,4 +68,8 @@ if [[ -e "$staging" ]]; then /bin/rm -rf "$staging"; fi
 
 if [[ -e "$app" ]]; then /bin/rm -rf "$app"; fi
 /bin/mv "$staging" "$app"
+/bin/cp "$repo_dir/Scripts/install-on-second-mac.sh" "$dist_dir/install-meeting-recorder.sh"
+/bin/chmod 755 "$dist_dir/install-meeting-recorder.sh"
+/bin/cp "$repo_dir/Raycast/meeting-recorder-toggle.sh" "$dist_dir/meeting-recorder-toggle.sh"
+/bin/chmod 755 "$dist_dir/meeting-recorder-toggle.sh"
 print "Built and signed $app"

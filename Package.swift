@@ -10,17 +10,25 @@ let package = Package(
         .executable(name: "MeetingRecorderAgent", targets: ["MeetingRecorderAgent"]),
         .executable(name: "meeting-recorder", targets: ["MeetingRecorderCLI"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.0.0"),
+    ],
     targets: [
         .target(name: "MeetingRecorderShared"),
         .target(
             name: "MeetingRecorderCore",
-            dependencies: ["MeetingRecorderShared"],
+            dependencies: [
+                "MeetingRecorderShared",
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
+                .product(name: "SpeakerKit", package: "argmax-oss-swift"),
+            ],
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("Security"),
+                .linkedFramework("UserNotifications"),
             ]
         ),
         .executableTarget(

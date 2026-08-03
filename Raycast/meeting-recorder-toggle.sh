@@ -8,6 +8,10 @@
 
 # Optional parameters:
 # @raycast.icon 🎙️
-# @raycast.description Start or stop a local Google Meet audio recording
+# @raycast.description Start or stop a local meeting audio recording
+# @raycast.argument1 { "type": "text", "placeholder": "App name: meet, teams…", "optional": true }
 
+if [[ -n "${1:-}" ]]; then
+  exec "$HOME/Applications/MeetingRecorder.app/Contents/Helpers/meeting-recorder" toggle --app "$1"
+fi
 exec "$HOME/Applications/MeetingRecorder.app/Contents/Helpers/meeting-recorder" toggle

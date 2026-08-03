@@ -21,12 +21,15 @@ public enum RecordingFileManager {
         let stamp = formatter.string(from: date)
         let app = sanitize(applicationName.isEmpty ? "Meeting" : applicationName)
         let base = "\(stamp)_\(app)"
-        let final = availableURL(in: outputDirectory, baseName: base, extension: "m4a")
-        let temporary = outputDirectory.appendingPathComponent(".recording-\(base)-\(UUID().uuidString).mov")
+        let sessionDirectory = availableDirectory(in: outputDirectory, baseName: base)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: false)
+        let sessionName = sessionDirectory.lastPathComponent
+        let final = sessionDirectory.appendingPathComponent(sessionName).appendingPathExtension("m4a")
+        let temporary = sessionDirectory.appendingPathComponent(".recording-\(sessionName)-\(UUID().uuidString).mov")
         let finalSources = final.deletingPathExtension()
             .appendingPathExtension("sources")
             .appendingPathExtension("mov")
-        let temporarySources = outputDirectory.appendingPathComponent(".recording-\(base)-\(UUID().uuidString).sources.mov")
+        let temporarySources = sessionDirectory.appendingPathComponent(".recording-\(sessionName)-\(UUID().uuidString).sources.mov")
         return RecordingPaths(
             temporary: temporary,
             final: final,
@@ -46,6 +49,32 @@ public enum RecordingFileManager {
         guard video.isEmpty else { throw MeetingRecorderError.io("Final recording unexpectedly contains video.") }
         guard duration.isNumeric, CMTimeGetSeconds(duration) > 0 else {
             throw MeetingRecorderError.io("Final recording has no playable duration.")
+        }
+    }
+
+    public static func duration(of url: URL) async throws -> TimeInterval {
+        let duration = try await AVURLAsset(url: url).load(.duration)
+        guard duration.isNumeric else {
+            throw MeetingRecorderError.io("Recording duration is not readable.")
+        }
+        return CMTimeGetSeconds(duration)
+    }
+
+    public static func shouldKeepRecording(
+        duration: TimeInterval,
+        minimumDuration: TimeInterval = RecorderConfiguration.defaultMinimumDuration
+    ) -> Bool {
+        duration >= minimumDuration
+    }
+
+    public static func discardTemporarySession(files: [URL]) throws {
+        let directories = Set(files.map { $0.deletingLastPathComponent().standardizedFileURL })
+        for file in files where FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.removeItem(at: file)
+        }
+        guard directories.count == 1, let directory = directories.first else { return }
+        if try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty {
+            try FileManager.default.removeItem(at: directory)
         }
     }
 
@@ -124,6 +153,16 @@ public enum RecordingFileManager {
         var index = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
             candidate = directory.appendingPathComponent("\(baseName)-\(index)").appendingPathExtension(ext)
+            index += 1
+        }
+        return candidate
+    }
+
+    private static func availableDirectory(in directory: URL, baseName: String) -> URL {
+        var candidate = directory.appendingPathComponent(baseName, isDirectory: true)
+        var index = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(baseName)-\(index)", isDirectory: true)
             index += 1
         }
         return candidate

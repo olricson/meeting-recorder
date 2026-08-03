@@ -12,10 +12,12 @@ struct MeetingRecorderCLI {
             let response: IPCResponse
             if invocation.commandName == "toggle" {
                 let status = try send(command: .status, paths: paths)
-                if let phase = status.state?.phase, [.starting, .recording, .finalizing].contains(phase) {
+                if status.state?.phase == .transcribing {
+                    response = status
+                } else if let phase = status.state?.phase, [.starting, .recording, .finalizing].contains(phase) {
                     response = try send(command: .stop, paths: paths)
                 } else {
-                    response = try send(command: .start(.automatic), paths: paths)
+                    response = try send(command: invocation.command, paths: paths)
                 }
             } else {
                 response = try send(command: invocation.command, paths: paths)
@@ -58,23 +60,36 @@ struct MeetingRecorderCLI {
         case "stop":
             try requireEmpty(arguments)
             return Invocation(commandName: command, command: .stop, json: json)
+        case "transcribe":
+            guard arguments.count == 1 else {
+                throw MeetingRecorderError.invalidArgument("Use `transcribe AUDIO_FILE`.")
+            }
+            return Invocation(
+                commandName: command,
+                command: .transcribeFile(try canonicalAudioPath(arguments[0])),
+                json: json
+            )
         case "toggle":
-            try requireEmpty(arguments)
-            return Invocation(commandName: command, command: .status, json: json)
+            let selector = try parseSelector(arguments)
+            return Invocation(commandName: command, command: .start(selector), json: json)
         case "start":
             let selector = try parseSelector(arguments)
             return Invocation(commandName: command, command: .start(selector), json: json)
         case "config":
-            guard arguments.count >= 2, (arguments[0] == "get" || arguments[0] == "set") else {
-                throw MeetingRecorderError.invalidArgument("Use `config get output-directory` or `config set output-directory PATH`.")
+            if arguments == ["list"] {
+                return Invocation(commandName: command, command: .configList, json: json)
             }
-            if arguments[0] == "get", arguments == ["get", "output-directory"] {
-                return Invocation(commandName: command, command: .configGetOutputDirectory, json: json)
+            if arguments.count == 2, arguments[0] == "get",
+               let key = RecorderConfigurationKey(rawValue: arguments[1]) {
+                return Invocation(commandName: command, command: .configGet(key), json: json)
             }
-            if arguments[0] == "set", arguments.count == 3, arguments[1] == "output-directory" {
-                return Invocation(commandName: command, command: .configSetOutputDirectory(arguments[2]), json: json)
+            if arguments.count == 3, arguments[0] == "set",
+               let key = RecorderConfigurationKey(rawValue: arguments[1]) {
+                return Invocation(commandName: command, command: .configSet(key, arguments[2]), json: json)
             }
-            throw MeetingRecorderError.invalidArgument("Invalid config command.")
+            throw MeetingRecorderError.invalidArgument(
+                "Use `config list`, `config get KEY`, or `config set KEY VALUE`."
+            )
         default:
             throw MeetingRecorderError.invalidArgument("Unknown command: \(command)")
         }
@@ -94,8 +109,24 @@ struct MeetingRecorderCLI {
             }
             return .processID(value)
         default:
-            throw MeetingRecorderError.invalidArgument("Unknown start option: \(arguments[0])")
+            throw MeetingRecorderError.invalidArgument("Unknown source selector option: \(arguments[0])")
         }
+    }
+
+    private static func canonicalAudioPath(_ value: String) throws -> String {
+        let expanded = (value as NSString).expandingTildeInPath
+        let url = expanded.hasPrefix("/")
+            ? URL(fileURLWithPath: expanded)
+            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+                .appendingPathComponent(expanded)
+        let canonical = url.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: canonical.path) else {
+            throw MeetingRecorderError.invalidArgument("Audio file does not exist: \(canonical.path)")
+        }
+        guard FileManager.default.isReadableFile(atPath: canonical.path) else {
+            throw MeetingRecorderError.invalidArgument("Audio file is not readable: \(canonical.path)")
+        }
+        return canonical.path
     }
 
     private static func send(command: RecorderCommand, paths: RecorderPaths) throws -> IPCResponse {
@@ -189,10 +220,16 @@ struct MeetingRecorderCLI {
           meeting-recorder list [--json]
           meeting-recorder start [--app NAME | --bundle-id ID | --pid PID]
           meeting-recorder stop
+          meeting-recorder transcribe AUDIO_FILE [--json]
           meeting-recorder status [--json]
-          meeting-recorder toggle
-          meeting-recorder config get output-directory
-          meeting-recorder config set output-directory PATH
+          meeting-recorder toggle [--app NAME | --bundle-id ID | --pid PID]
+          meeting-recorder config list [--json]
+          meeting-recorder config get KEY [--json]
+          meeting-recorder config set KEY VALUE [--json]
+
+        Configuration keys:
+          output-directory, transcription-model, minimum-duration,
+          language, diarization, speaker-count
         """)
     }
 }

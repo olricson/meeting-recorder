@@ -5,6 +5,7 @@ public enum RecorderPhase: String, Codable, Sendable {
     case starting
     case recording
     case finalizing
+    case transcribing
     case failed
 }
 
@@ -47,6 +48,8 @@ public struct RecorderState: Codable, Equatable, Sendable {
     public var finalOutputPath: String?
     public var temporarySourcesPath: String?
     public var finalSourcesPath: String?
+    public var transcriptionInputPath: String?
+    public var transcriptPath: String?
     public var warning: String?
     public var lastError: String?
     public var metrics: RecorderMetrics
@@ -65,6 +68,8 @@ public struct RecorderState: Codable, Equatable, Sendable {
         finalOutputPath: String? = nil,
         temporarySourcesPath: String? = nil,
         finalSourcesPath: String? = nil,
+        transcriptionInputPath: String? = nil,
+        transcriptPath: String? = nil,
         warning: String? = nil,
         lastError: String? = nil,
         metrics: RecorderMetrics = .init()
@@ -83,20 +88,90 @@ public struct RecorderState: Codable, Equatable, Sendable {
         self.finalOutputPath = finalOutputPath
         self.temporarySourcesPath = temporarySourcesPath
         self.finalSourcesPath = finalSourcesPath
+        self.transcriptionInputPath = transcriptionInputPath
+        self.transcriptPath = transcriptPath
         self.warning = warning
         self.lastError = lastError
         self.metrics = metrics
     }
 }
 
+public enum TranscriptionLanguage: String, Codable, CaseIterable, Sendable {
+    case automatic = "auto"
+    case english = "en"
+    case french = "fr"
+}
+
+public enum RecorderConfigurationKey: String, Codable, CaseIterable, Sendable {
+    case outputDirectory = "output-directory"
+    case transcriptionModel = "transcription-model"
+    case minimumDuration = "minimum-duration"
+    case language
+    case diarization
+    case speakerCount = "speaker-count"
+}
+
 public struct RecorderConfiguration: Codable, Equatable, Sendable {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
+    public static let defaultTranscriptionModel = "large-v3-v20240930_626MB"
+    public static let defaultMinimumDuration: TimeInterval = 30
+
     public var schemaVersion: Int
     public var outputDirectory: String
+    public var transcriptionModel: String
+    public var minimumDuration: TimeInterval
+    public var language: TranscriptionLanguage
+    public var diarizationEnabled: Bool
+    public var speakerCount: Int?
 
-    public init(outputDirectory: String) {
+    public init(
+        outputDirectory: String,
+        transcriptionModel: String = Self.defaultTranscriptionModel,
+        minimumDuration: TimeInterval = Self.defaultMinimumDuration,
+        language: TranscriptionLanguage = .automatic,
+        diarizationEnabled: Bool = true,
+        speakerCount: Int? = nil
+    ) {
         self.schemaVersion = Self.schemaVersion
         self.outputDirectory = outputDirectory
+        self.transcriptionModel = transcriptionModel
+        self.minimumDuration = minimumDuration
+        self.language = language
+        self.diarizationEnabled = diarizationEnabled
+        self.speakerCount = speakerCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, outputDirectory, transcriptionModel, minimumDuration
+        case language, diarizationEnabled, speakerCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = Self.schemaVersion
+        self.outputDirectory = try container.decode(String.self, forKey: .outputDirectory)
+        self.transcriptionModel = try container.decodeIfPresent(String.self, forKey: .transcriptionModel)
+            ?? Self.defaultTranscriptionModel
+        self.minimumDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .minimumDuration)
+            ?? Self.defaultMinimumDuration
+        self.language = try container.decodeIfPresent(TranscriptionLanguage.self, forKey: .language) ?? .automatic
+        self.diarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .diarizationEnabled) ?? true
+        self.speakerCount = try container.decodeIfPresent(Int.self, forKey: .speakerCount)
+    }
+
+    public func value(for key: RecorderConfigurationKey) -> String {
+        switch key {
+        case .outputDirectory: return outputDirectory
+        case .transcriptionModel: return transcriptionModel
+        case .minimumDuration: return Self.formatDuration(minimumDuration)
+        case .language: return language.rawValue
+        case .diarization: return String(diarizationEnabled)
+        case .speakerCount: return speakerCount.map(String.init) ?? "auto"
+        }
+    }
+
+    private static func formatDuration(_ value: TimeInterval) -> String {
+        value.rounded() == value ? String(Int(value)) : String(value)
     }
 }
 
@@ -190,12 +265,17 @@ public enum RecorderCommand: Codable, Equatable, Sendable {
     case start(SourceSelector)
     case stop
     case status
+    case transcribeFile(String)
+    case configList
+    case configGet(RecorderConfigurationKey)
+    case configSet(RecorderConfigurationKey, String)
     case configGetOutputDirectory
     case configSetOutputDirectory(String)
 
-    private enum CodingKeys: String, CodingKey { case kind, selector, value }
+    private enum CodingKeys: String, CodingKey { case kind, selector, key, value }
     private enum Kind: String, Codable {
-        case setup, list, start, stop, status, configGetOutputDirectory, configSetOutputDirectory
+        case setup, list, start, stop, status, transcribeFile
+        case configList, configGet, configSet, configGetOutputDirectory, configSetOutputDirectory
     }
 
     public init(from decoder: Decoder) throws {
@@ -206,6 +286,14 @@ public enum RecorderCommand: Codable, Equatable, Sendable {
         case .start: self = .start(try container.decode(SourceSelector.self, forKey: .selector))
         case .stop: self = .stop
         case .status: self = .status
+        case .transcribeFile: self = .transcribeFile(try container.decode(String.self, forKey: .value))
+        case .configList: self = .configList
+        case .configGet: self = .configGet(try container.decode(RecorderConfigurationKey.self, forKey: .key))
+        case .configSet:
+            self = .configSet(
+                try container.decode(RecorderConfigurationKey.self, forKey: .key),
+                try container.decode(String.self, forKey: .value)
+            )
         case .configGetOutputDirectory: self = .configGetOutputDirectory
         case .configSetOutputDirectory:
             self = .configSetOutputDirectory(try container.decode(String.self, forKey: .value))
@@ -222,6 +310,17 @@ public enum RecorderCommand: Codable, Equatable, Sendable {
             try container.encode(selector, forKey: .selector)
         case .stop: try container.encode(Kind.stop, forKey: .kind)
         case .status: try container.encode(Kind.status, forKey: .kind)
+        case .transcribeFile(let value):
+            try container.encode(Kind.transcribeFile, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .configList: try container.encode(Kind.configList, forKey: .kind)
+        case .configGet(let key):
+            try container.encode(Kind.configGet, forKey: .kind)
+            try container.encode(key, forKey: .key)
+        case .configSet(let key, let value):
+            try container.encode(Kind.configSet, forKey: .kind)
+            try container.encode(key, forKey: .key)
+            try container.encode(value, forKey: .value)
         case .configGetOutputDirectory: try container.encode(Kind.configGetOutputDirectory, forKey: .kind)
         case .configSetOutputDirectory(let value):
             try container.encode(Kind.configSetOutputDirectory, forKey: .kind)
@@ -250,6 +349,7 @@ public struct IPCResponse: Codable, Sendable {
     public var state: RecorderState?
     public var content: ContentSnapshot?
     public var outputDirectory: String?
+    public var configuration: RecorderConfiguration?
 
     public init(
         requestID: UUID,
@@ -257,7 +357,8 @@ public struct IPCResponse: Codable, Sendable {
         message: String,
         state: RecorderState? = nil,
         content: ContentSnapshot? = nil,
-        outputDirectory: String? = nil
+        outputDirectory: String? = nil,
+        configuration: RecorderConfiguration? = nil
     ) {
         self.version = 1
         self.requestID = requestID
@@ -266,6 +367,7 @@ public struct IPCResponse: Codable, Sendable {
         self.state = state
         self.content = content
         self.outputDirectory = outputDirectory
+        self.configuration = configuration
     }
 }
 
@@ -285,7 +387,7 @@ public enum MeetingRecorderError: LocalizedError, Equatable {
         case .invalidArgument(let value), .unavailable(let value), .permissionDenied(let value),
              .ambiguousSource(let value), .sourceNotFound(let value), .io(let value), .capture(let value):
             return value
-        case .alreadyRecording: return "A recording is already active."
+        case .alreadyRecording: return "A recording or transcription is already active."
         case .notRecording: return "No recording is active."
         }
     }

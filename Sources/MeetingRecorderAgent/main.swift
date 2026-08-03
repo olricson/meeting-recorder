@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import MeetingRecorderCore
 import MeetingRecorderShared
+import UserNotifications
 
 @main
 struct MeetingRecorderAgentMain {
@@ -10,12 +11,13 @@ struct MeetingRecorderAgentMain {
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
         let delegate = AgentDelegate()
+        UNUserNotificationCenter.current().delegate = delegate
         application.delegate = delegate
         application.run()
     }
 }
 
-final class AgentDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
+final class AgentDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private let paths = RecorderPaths()
     private var coordinator: RecorderCoordinator?
     private var server: UnixSocketServer?
@@ -126,5 +128,12 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable 
                 await coordinator.stopForLifecycleEvent("the selected application exited")
             }
         }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
     }
 }

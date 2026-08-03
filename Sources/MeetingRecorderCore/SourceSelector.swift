@@ -34,7 +34,8 @@ public enum ApplicationSourceSelector {
             let exact = applications.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
             if !exact.isEmpty { return try requireUnique(exact, description: "application name \(name)") }
             let partial = applications.filter { $0.name.localizedCaseInsensitiveContains(name) }
-            return try requireUnique(partial, description: "application name containing \(name)")
+            let nonHelpers = partial.filter { !isCaptureHelper($0) }
+            return try requireUnique(nonHelpers.isEmpty ? partial : nonHelpers, description: "application name containing \(name)")
         }
     }
 
@@ -42,7 +43,15 @@ public enum ApplicationSourceSelector {
         applications: [ApplicationSnapshot],
         windows: [WindowSnapshot]
     ) throws -> SourceSelectionResult {
-        let namedMeet = applications.filter { $0.name.localizedCaseInsensitiveContains("Google Meet") }
+        let exactMeet = applications.filter {
+            $0.name.caseInsensitiveCompare("Google Meet") == .orderedSame && !isCaptureHelper($0)
+        }
+        if exactMeet.count == 1 { return result(for: exactMeet[0]) }
+        if exactMeet.count > 1 {
+            throw ambiguous(exactMeet, context: "Several exact Google Meet applications are available")
+        }
+
+        let namedMeet = applications.filter(isDedicatedMeetApplication)
         if namedMeet.count == 1 { return result(for: namedMeet[0]) }
         if namedMeet.count > 1 {
             throw ambiguous(namedMeet, context: "Several Google Meet applications are available")
@@ -95,7 +104,24 @@ public enum ApplicationSourceSelector {
         return normalized.contains("google meet") || normalized.contains("meet.google.com") || normalized.hasPrefix("meet –") || normalized.hasPrefix("meet -")
     }
 
+    private static func isDedicatedMeetApplication(_ application: ApplicationSnapshot) -> Bool {
+        application.name.localizedCaseInsensitiveContains("Google Meet")
+            && !isCaptureHelper(application)
+    }
+
+    private static func isCaptureHelper(_ application: ApplicationSnapshot) -> Bool {
+        let bundle = application.bundleIdentifier.lowercased()
+        let name = application.name.lowercased()
+        return name.hasPrefix("autofill (")
+            || name.contains("viewservice")
+            || bundle.contains("safariplatformsupport.helper")
+            || bundle.hasPrefix("com.apple.appkit.xpc.")
+            || bundle.hasSuffix(".helper")
+            || bundle.contains(".helper.")
+    }
+
     private static func isSupportedBrowser(_ application: ApplicationSnapshot) -> Bool {
+        guard !isCaptureHelper(application) else { return false }
         let bundle = application.bundleIdentifier.lowercased()
         let name = application.name.lowercased()
         return bundle == "com.google.chrome"
