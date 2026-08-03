@@ -1,0 +1,10 @@
+.build/
+.swiftpm/
+build/
+dist/
+*.xcodeproj/xcuserdata/
+.DS_Store
+*.p12
+*.cer
+*.crt
+*.key

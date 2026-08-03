@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>MeetingRecorder</string>
+    <key>CFBundleExecutable</key>
+    <string>MeetingRecorderAgent</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.olivier.meetingrecorder</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>MeetingRecorder</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MeetingRecorder mixes your microphone with the selected meeting application's audio.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>MeetingRecorder records audio from the meeting application you select.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>MeetingRecorder only accesses Documents if you explicitly configure it as the recording destination.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Private personal utility</string>
+</dict>
+</plist>
