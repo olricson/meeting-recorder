@@ -70,6 +70,8 @@ if [[ -e "$app" ]]; then /bin/rm -rf "$app"; fi
 /bin/mv "$staging" "$app"
 /bin/cp "$repo_dir/Scripts/install-on-second-mac.sh" "$dist_dir/install-meeting-recorder.sh"
 /bin/chmod 755 "$dist_dir/install-meeting-recorder.sh"
+/bin/cp "$repo_dir/Scripts/uninstall.sh" "$dist_dir/uninstall-meeting-recorder.sh"
+/bin/chmod 755 "$dist_dir/uninstall-meeting-recorder.sh"
 /bin/cp "$repo_dir/Raycast/meeting-recorder-toggle.sh" "$dist_dir/meeting-recorder-toggle.sh"
 /bin/chmod 755 "$dist_dir/meeting-recorder-toggle.sh"
 print "Built and signed $app"

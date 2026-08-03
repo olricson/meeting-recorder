@@ -8,7 +8,7 @@ private func app(_ name: String, _ bundle: String, _ pid: Int32) -> ApplicationS
 }
 
 final class SourceSelectorTests: XCTestCase {
-    func testAutomaticSelectionPrefersDedicatedMeetApplication() throws {
+    func testAutomaticSelectionPrefersMainChromeOverChromeMeetApplication() throws {
         let content = ContentSnapshot(
         applications: [
             app("Google Chrome", "com.google.Chrome", 10),
@@ -17,7 +17,8 @@ final class SourceSelectorTests: XCTestCase {
         windows: []
     )
     let result = try ApplicationSourceSelector.select(from: content, selector: .automatic)
-        XCTAssertEqual(result.application.processID, 20)
+        XCTAssertEqual(result.application.processID, 10)
+        XCTAssertEqual(result.warning?.contains("main Google Chrome process"), true)
     }
 
     func testAutomaticSelectionIgnoresSafariAutoFillMeetHelper() throws {
@@ -30,9 +31,11 @@ final class SourceSelectorTests: XCTestCase {
             windows: []
         )
 
-        let result = try ApplicationSourceSelector.select(from: content, selector: .automatic)
-
-        XCTAssertEqual(result.application, meet)
+        XCTAssertThrowsError(try ApplicationSourceSelector.select(from: content, selector: .automatic)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("not selected automatically"))
+        }
+        let explicit = try ApplicationSourceSelector.select(from: content, selector: .applicationName("meet"))
+        XCTAssertEqual(explicit.application, meet)
     }
 
     func testPartialMeetNameIgnoresAutoFillHelper() throws {
@@ -64,10 +67,9 @@ final class SourceSelectorTests: XCTestCase {
             windows: []
         )
 
-        let automatic = try ApplicationSourceSelector.select(from: content, selector: .automatic)
         let partial = try ApplicationSourceSelector.select(from: content, selector: .applicationName("meet"))
 
-        XCTAssertEqual(automatic.application, meet)
+        XCTAssertThrowsError(try ApplicationSourceSelector.select(from: content, selector: .automatic))
         XCTAssertEqual(partial.application, meet)
     }
 
@@ -162,6 +164,20 @@ final class SourceSelectorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDirectory.path))
     }
 
+    func testRetranscriptionPrefersSiblingSourcesFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MeetingRecorderTranscriptionInputTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mixed = directory.appendingPathComponent("meeting.m4a")
+        let sources = directory.appendingPathComponent("meeting.sources.mov")
+
+        XCTAssertEqual(RecordingFileManager.preferredTranscriptionInput(for: mixed), mixed)
+        try Data([0]).write(to: sources)
+        XCTAssertEqual(RecordingFileManager.preferredTranscriptionInput(for: mixed), sources)
+        XCTAssertEqual(RecordingFileManager.preferredTranscriptionInput(for: sources), sources)
+    }
+
     func testTranscriptMarkdownLabelsAndTimestamps() {
         let markdown = MeetingTranscriber.renderMarkdown(
             segments: [
@@ -177,6 +193,24 @@ final class SourceSelectorTests: XCTestCase {
         XCTAssertTrue(markdown.contains("[01:05] **You:** Thank you"))
         XCTAssertTrue(markdown.contains("English (en), French (fr)"))
         XCTAssertTrue(markdown.contains("automatic multilingual detection"))
+    }
+
+    func testCleanAndRawTranscriptsHandleWhisperControlTokensDifferently() {
+        let rawText = "<|startoftranscript|><|transcribe|><|0.00|> Ouais. <|7.40|>"
+        let segment = MeetingTranscriptSegment(speaker: .you, start: 0, end: 7.4, text: rawText)
+
+        XCTAssertEqual(MeetingTranscriber.sanitizedTranscriptText(rawText), "Ouais.")
+        let clean = MeetingTranscriber.renderMarkdown(segments: [segment], model: "test-model")
+        let raw = MeetingTranscriber.renderMarkdown(
+            segments: [segment],
+            model: "test-model",
+            sanitizeControlTokens: false
+        )
+
+        XCTAssertTrue(clean.contains("**You:** Ouais."))
+        XCTAssertFalse(clean.contains("<|"))
+        XCTAssertTrue(raw.contains(rawText))
+        XCTAssertTrue(raw.contains("Raw Whisper transcript (debug)"))
     }
 
     func testMeetingWordsAreGroupedByDiarizedSpeaker() {
@@ -214,6 +248,17 @@ final class SourceSelectorTests: XCTestCase {
         XCTAssertTrue(body.hasSuffix("…"))
     }
 
+    func testNotificationUsesHumanReadableTranscriptionStages() {
+        XCTAssertEqual(
+            RecorderNotifications.transcriptionStageLabel(.loadingModel),
+            "Loading transcription model"
+        )
+        XCTAssertEqual(
+            RecorderNotifications.transcriptionStageLabel(.identifyingParticipants),
+            "Identifying participants"
+        )
+    }
+
     func testTranscriptOutputNameForRecordedSourcesAndOrdinaryAudio() {
         XCTAssertEqual(
             MeetingTranscriber.transcriptURL(for: URL(fileURLWithPath: "/tmp/session/meeting.sources.mov")).path,
@@ -222,6 +267,14 @@ final class SourceSelectorTests: XCTestCase {
         XCTAssertEqual(
             MeetingTranscriber.transcriptURL(for: URL(fileURLWithPath: "/tmp/interview.m4a")).path,
             "/tmp/interview.transcript.md"
+        )
+        XCTAssertEqual(
+            MeetingTranscriber.rawTranscriptURL(for: URL(fileURLWithPath: "/tmp/session/meeting.sources.mov")).path,
+            "/tmp/session/transcript.raw.md"
+        )
+        XCTAssertEqual(
+            MeetingTranscriber.rawTranscriptURL(for: URL(fileURLWithPath: "/tmp/interview.m4a")).path,
+            "/tmp/interview.transcript.raw.md"
         )
     }
 

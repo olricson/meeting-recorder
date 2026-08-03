@@ -4,6 +4,41 @@ import MeetingRecorderShared
 
 enum AudioSourceKind { case application, microphone }
 
+private struct AudioLevelAccumulator {
+    private var sumOfSquares = 0.0
+    private var sampleCount: Int64 = 0
+    private var peak = 0.0
+
+    mutating func observe(left: [Float], right: [Float]) {
+        for sample in left {
+            let amplitude = abs(Double(sample))
+            sumOfSquares += amplitude * amplitude
+            sampleCount += 1
+            peak = max(peak, amplitude)
+        }
+        for sample in right {
+            let amplitude = abs(Double(sample))
+            sumOfSquares += amplitude * amplitude
+            sampleCount += 1
+            peak = max(peak, amplitude)
+        }
+    }
+
+    var rmsDB: Double? {
+        guard sampleCount > 0 else { return nil }
+        return Self.decibels(sqrt(sumOfSquares / Double(sampleCount)))
+    }
+
+    var peakDB: Double? {
+        guard sampleCount > 0 else { return nil }
+        return Self.decibels(peak)
+    }
+
+    private static func decibels(_ amplitude: Double) -> Double {
+        20 * log10(max(amplitude, 1e-8))
+    }
+}
+
 private struct SourceTimeline {
     private(set) var baseFrame: Int64 = 0
     private var offset = 0
@@ -84,6 +119,8 @@ final class TimelineMixer: @unchecked Sendable {
     private var microphone = SourceTimeline()
     private var timer: DispatchSourceTimer?
     private var metrics = RecorderMetrics()
+    private var applicationLevel = AudioLevelAccumulator()
+    private var microphoneLevel = AudioLevelAccumulator()
     private var terminalError: Error?
     private var stopped = false
 
@@ -135,6 +172,10 @@ final class TimelineMixer: @unchecked Sendable {
                     return
                 }
                 self.metrics.writerBackpressureEvents = self.writer.backpressureEvents + self.sourcesWriter.backpressureEvents
+                self.metrics.applicationRMSLevelDB = self.applicationLevel.rmsDB
+                self.metrics.applicationPeakLevelDB = self.applicationLevel.peakDB
+                self.metrics.microphoneRMSLevelDB = self.microphoneLevel.rmsDB
+                self.metrics.microphonePeakLevelDB = self.microphoneLevel.peakDB
                 let metrics = self.metrics
                 Task {
                     do {
@@ -157,6 +198,8 @@ final class TimelineMixer: @unchecked Sendable {
         while nextOutputFrame + blockFrames <= target {
             let app = application.read(count: Int(blockFrames), metrics: &metrics)
             let mic = microphone.read(count: Int(blockFrames), metrics: &metrics)
+            applicationLevel.observe(left: app.left, right: app.right)
+            microphoneLevel.observe(left: mic.left, right: mic.right)
             var interleaved = [Float](repeating: 0, count: Int(blockFrames) * 2)
             var applicationInterleaved = [Float](repeating: 0, count: Int(blockFrames) * 2)
             var microphoneInterleaved = [Float](repeating: 0, count: Int(blockFrames) * 2)

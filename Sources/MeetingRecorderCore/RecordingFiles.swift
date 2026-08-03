@@ -10,6 +10,21 @@ public struct RecordingPaths: Sendable {
 }
 
 public enum RecordingFileManager {
+    public static func preferredTranscriptionInput(for requestedURL: URL) -> URL {
+        let requestedURL = requestedURL.standardizedFileURL
+        guard requestedURL.pathExtension.caseInsensitiveCompare("m4a") == .orderedSame else {
+            return requestedURL
+        }
+        let sourcesURL = requestedURL.deletingPathExtension()
+            .appendingPathExtension("sources")
+            .appendingPathExtension("mov")
+        guard FileManager.default.fileExists(atPath: sourcesURL.path),
+              FileManager.default.isReadableFile(atPath: sourcesURL.path) else {
+            return requestedURL
+        }
+        return sourcesURL
+    }
+
     public static func makePaths(outputDirectory: URL, applicationName: String, date: Date = Date()) throws -> RecordingPaths {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         guard FileManager.default.isWritableFile(atPath: outputDirectory.path) else {

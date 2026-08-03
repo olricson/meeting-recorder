@@ -29,6 +29,38 @@ final class SharedTests: XCTestCase {
         XCTAssertEqual(state.phase, .idle)
         XCTAssertNil(state.transcriptionInputPath)
         XCTAssertNil(state.transcriptPath)
+        XCTAssertNil(state.rawTranscriptPath)
+        XCTAssertNil(state.debugLogPath)
+        XCTAssertNil(state.transcriptionProgress)
+        XCTAssertNil(state.metrics.applicationPeakLevelDB)
+    }
+
+    func testApplicationSilencePolicyUsesMeasuredPeakLevel() {
+        XCTAssertTrue(RecorderMetrics(applicationPeakLevelDB: -91).applicationIsEffectivelySilent)
+        XCTAssertTrue(RecorderMetrics(applicationPeakLevelDB: -70).applicationIsEffectivelySilent)
+        XCTAssertFalse(RecorderMetrics(applicationPeakLevelDB: -69.9).applicationIsEffectivelySilent)
+        XCTAssertFalse(RecorderMetrics().applicationIsEffectivelySilent)
+    }
+
+    func testTranscriptionProgressRoundTripsAndClampsFraction() throws {
+        let progress = RecorderTranscriptionProgress(
+            stage: .identifyingParticipants,
+            fractionCompleted: 1.5,
+            detectedLanguages: ["en", "fr"],
+            participants: ["You", "Speaker 1"]
+        )
+        XCTAssertEqual(progress.fractionCompleted, 1)
+
+        let state = RecorderState(
+            phase: .transcribing,
+            sessionID: UUID(),
+            transcriptionProgress: progress
+        )
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(RecorderState.self, from: data)
+        XCTAssertEqual(decoded, state)
+        XCTAssertEqual(decoded.transcriptionProgress?.detectedLanguages, ["en", "fr"])
+        XCTAssertEqual(decoded.transcriptionProgress?.participants, ["You", "Speaker 1"])
     }
 
     func testConfigurationUsesLocalMeetingsDirectory() throws {
@@ -46,6 +78,7 @@ final class SharedTests: XCTestCase {
         XCTAssertEqual(configuration.language, .automatic)
         XCTAssertTrue(configuration.diarizationEnabled)
         XCTAssertNil(configuration.speakerCount)
+        XCTAssertFalse(configuration.debugEnabled)
     }
 
     func testConfiguredPathExpandsTilde() throws {
@@ -68,15 +101,18 @@ final class SharedTests: XCTestCase {
         _ = try store.set(.minimumDuration, value: "12.5")
         _ = try store.set(.language, value: "fr")
         _ = try store.set(.diarization, value: "false")
-        let configuration = try store.set(.speakerCount, value: "3")
+        _ = try store.set(.speakerCount, value: "3")
+        let configuration = try store.set(.debug, value: "true")
 
         XCTAssertEqual(configuration.transcriptionModel, "small-model")
         XCTAssertEqual(configuration.minimumDuration, 12.5)
         XCTAssertEqual(configuration.language, .french)
         XCTAssertFalse(configuration.diarizationEnabled)
         XCTAssertEqual(configuration.speakerCount, 3)
+        XCTAssertTrue(configuration.debugEnabled)
         XCTAssertThrowsError(try store.set(.speakerCount, value: "21"))
         XCTAssertThrowsError(try store.set(.language, value: "de"))
+        XCTAssertThrowsError(try store.set(.debug, value: "sometimes"))
     }
 
     func testLegacyConfigurationReceivesNewDefaults() throws {
@@ -87,6 +123,7 @@ final class SharedTests: XCTestCase {
         XCTAssertEqual(configuration.minimumDuration, 30)
         XCTAssertEqual(configuration.language, .automatic)
         XCTAssertTrue(configuration.diarizationEnabled)
+        XCTAssertFalse(configuration.debugEnabled)
     }
 
     func testUnixSocketRequestResponse() throws {
@@ -100,6 +137,29 @@ final class SharedTests: XCTestCase {
         let response = try UnixSocketClient().send(IPCRequest(command: .status), to: socket, timeout: 2)
         XCTAssertTrue(response.success)
         XCTAssertEqual(response.message, "pong")
+    }
+
+    func testFileLoggerCopiesDiagnosticsToSessionLogUntilDetached() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MeetingRecorderLoggerTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let central = directory.appendingPathComponent("central.log")
+        let session = directory.appendingPathComponent("session/meeting-recorder.debug.log")
+        let logger = FileLogger(fileURL: central)
+
+        logger.setSupplementalFile(session)
+        logger.log(.info, "first\nmessage")
+        logger.flush()
+        logger.setSupplementalFile(nil)
+        logger.log(.warning, "central only")
+        logger.flush()
+
+        let centralText = try String(contentsOf: central, encoding: .utf8)
+        let sessionText = try String(contentsOf: session, encoding: .utf8)
+        XCTAssertTrue(centralText.contains("first message"))
+        XCTAssertTrue(centralText.contains("central only"))
+        XCTAssertTrue(sessionText.contains("first message"))
+        XCTAssertFalse(sessionText.contains("central only"))
     }
 
     func testUnixSocketWaitsForAClientThatConnectsBeforeWriting() throws {

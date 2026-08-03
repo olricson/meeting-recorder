@@ -1,4 +1,5 @@
 import Foundation
+import MeetingRecorderShared
 import UserNotifications
 
 public enum RecorderNotificationPermission: Equatable, Sendable {
@@ -8,6 +9,8 @@ public enum RecorderNotificationPermission: Equatable, Sendable {
 }
 
 public enum RecorderNotifications {
+    private static let progressIdentifierPrefix = "meeting-recorder-transcription-progress-"
+
     public static func permission() async -> RecorderNotificationPermission {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         switch settings.authorizationStatus {
@@ -39,8 +42,10 @@ public enum RecorderNotifications {
 
     public static func transcriptionCompleted(
         transcriptURL: URL,
-        warning: String?
+        warning: String?,
+        sessionID: UUID?
     ) async {
+        clearTranscriptionProgress(sessionID: sessionID)
         let folderName = transcriptURL.deletingLastPathComponent().lastPathComponent
         let transcriptName = transcriptURL.lastPathComponent == "transcript.md"
             ? folderName
@@ -58,11 +63,42 @@ public enum RecorderNotifications {
         }
     }
 
-    public static func transcriptionFailed(_ error: String) async {
+    public static func transcriptionFailed(_ error: String, sessionID: UUID?) async {
+        clearTranscriptionProgress(sessionID: sessionID)
         await deliver(title: "Transcription failed", body: error)
     }
 
-    private static func deliver(title: String, body: String) async {
+    public static func transcriptionProgress(
+        _ progress: RecorderTranscriptionProgress,
+        sessionID: UUID,
+        sourceName: String?
+    ) async {
+        guard progress.stage != .completed, progress.stage != .failed else { return }
+        let percent = Int((progress.fractionCompleted * 100).rounded())
+        var details = [transcriptionStageLabel(progress.stage)]
+        if !progress.detectedLanguages.isEmpty {
+            details.append("Language: \(progress.detectedLanguages.map(languageDisplayName).joined(separator: ", "))")
+        }
+        if !progress.participants.isEmpty {
+            details.append("Participants: \(progress.participants.joined(separator: ", "))")
+        }
+        let source = sourceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        await deliver(
+            identifier: progressIdentifier(sessionID),
+            title: "Transcribing — \(percent)%",
+            body: ([source].compactMap { $0 } + details).joined(separator: " • "),
+            sound: false,
+            replacingDeliveredNotification: true
+        )
+    }
+
+    private static func deliver(
+        identifier: String = "meeting-recorder-transcription-\(UUID().uuidString)",
+        title: String,
+        body: String,
+        sound: Bool = true,
+        replacingDeliveredNotification: Bool = false
+    ) async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
             return
@@ -70,13 +106,51 @@ public enum RecorderNotifications {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = notificationBody(body)
-        content.sound = .default
+        if sound { content.sound = .default }
+        let center = UNUserNotificationCenter.current()
+        if replacingDeliveredNotification {
+            center.removePendingNotificationRequests(withIdentifiers: [identifier])
+            center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        }
         let request = UNNotificationRequest(
-            identifier: "meeting-recorder-transcription-\(UUID().uuidString)",
+            identifier: identifier,
             content: content,
             trigger: nil
         )
-        try? await UNUserNotificationCenter.current().add(request)
+        try? await center.add(request)
+    }
+
+    private static func clearTranscriptionProgress(sessionID: UUID?) {
+        guard let sessionID else { return }
+        let identifier = progressIdentifier(sessionID)
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    private static func progressIdentifier(_ sessionID: UUID) -> String {
+        progressIdentifierPrefix + sessionID.uuidString
+    }
+
+    static func transcriptionStageLabel(_ stage: RecorderTranscriptionStage) -> String {
+        switch stage {
+        case .preparing: return "Preparing audio"
+        case .loadingModel: return "Loading transcription model"
+        case .transcribingMeeting: return "Transcribing meeting audio"
+        case .transcribingMicrophone: return "Transcribing microphone audio"
+        case .identifyingParticipants: return "Identifying participants"
+        case .writingTranscript: return "Writing transcript"
+        case .completed: return "Completed"
+        case .failed: return "Failed"
+        }
+    }
+
+    private static func languageDisplayName(_ code: String) -> String {
+        switch code.lowercased() {
+        case "en", "english": return "English"
+        case "fr", "french": return "French"
+        default: return code
+        }
     }
 
     static func notificationBody(_ value: String, maximumLength: Int = 240) -> String {

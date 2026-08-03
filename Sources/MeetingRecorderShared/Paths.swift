@@ -138,6 +138,12 @@ public final class ConfigurationStore: @unchecked Sendable {
                 } else {
                     throw MeetingRecorderError.invalidArgument("speaker-count must be auto or an integer from 1 through 20.")
                 }
+            case .debug:
+                switch value.lowercased() {
+                case "true", "yes", "on", "1": configuration.debugEnabled = true
+                case "false", "no", "off", "0": configuration.debugEnabled = false
+                default: throw MeetingRecorderError.invalidArgument("debug must be true or false.")
+                }
             }
             try AtomicJSONStore.save(configuration, to: paths.configFile)
             return configuration

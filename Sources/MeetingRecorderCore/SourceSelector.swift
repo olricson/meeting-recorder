@@ -43,15 +43,28 @@ public enum ApplicationSourceSelector {
         applications: [ApplicationSnapshot],
         windows: [WindowSnapshot]
     ) throws -> SourceSelectionResult {
+        let chromeMeetApplications = applications.filter(isChromeMeetApplication)
+        let mainChromeApplications = applications.filter(isMainChrome)
+        if !chromeMeetApplications.isEmpty, mainChromeApplications.count == 1 {
+            return SourceSelectionResult(
+                application: mainChromeApplications[0],
+                warning: "A Google Meet Chrome app was found, but macOS may attribute its audio to the main Google Chrome process. Recording all Chrome audio instead."
+            )
+        }
+
         let exactMeet = applications.filter {
-            $0.name.caseInsensitiveCompare("Google Meet") == .orderedSame && !isCaptureHelper($0)
+            $0.name.caseInsensitiveCompare("Google Meet") == .orderedSame
+                && !isCaptureHelper($0)
+                && !isChromeMeetApplication($0)
         }
         if exactMeet.count == 1 { return result(for: exactMeet[0]) }
         if exactMeet.count > 1 {
             throw ambiguous(exactMeet, context: "Several exact Google Meet applications are available")
         }
 
-        let namedMeet = applications.filter(isDedicatedMeetApplication)
+        let namedMeet = applications.filter {
+            isDedicatedMeetApplication($0) && !isChromeMeetApplication($0)
+        }
         if namedMeet.count == 1 { return result(for: namedMeet[0]) }
         if namedMeet.count > 1 {
             throw ambiguous(namedMeet, context: "Several Google Meet applications are available")
@@ -61,7 +74,9 @@ public enum ApplicationSourceSelector {
             guard isMeetWindowTitle(window.title) else { return nil }
             return window.ownerProcessID
         })
-        let windowOwners = applications.filter { meetOwnerPIDs.contains($0.processID) }
+        let windowOwners = applications.filter {
+            meetOwnerPIDs.contains($0.processID) && !isChromeMeetApplication($0)
+        }
         if windowOwners.count == 1 { return result(for: windowOwners[0]) }
         if windowOwners.count > 1 {
             throw ambiguous(windowOwners, context: "Meet-looking windows belong to several applications")
@@ -72,8 +87,11 @@ public enum ApplicationSourceSelector {
         if browsers.count > 1 {
             throw ambiguous(browsers, context: "Several supported browsers are available")
         }
+        let chromeMeetHint = chromeMeetApplications.isEmpty
+            ? ""
+            : " A Chrome-installed Google Meet app was found, but it is not selected automatically because its audio can be silent; launch the main Google Chrome application or explicitly select the app at your own risk."
         throw MeetingRecorderError.sourceNotFound(
-            "No Google Meet, Chrome, or Safari application could be selected. Run `meeting-recorder list`, then use --app, --bundle-id, or --pid."
+            "No Google Meet, Chrome, or Safari application could be selected.\(chromeMeetHint) Run `meeting-recorder list`, then use --app, --bundle-id, or --pid."
         )
     }
 
@@ -125,10 +143,20 @@ public enum ApplicationSourceSelector {
         let bundle = application.bundleIdentifier.lowercased()
         let name = application.name.lowercased()
         return bundle == "com.google.chrome"
-            || bundle.hasPrefix("com.google.chrome.")
             || bundle == "com.apple.safari"
             || bundle.hasPrefix("com.apple.safari.")
             || name == "google chrome"
             || name == "safari"
+    }
+
+    private static func isMainChrome(_ application: ApplicationSnapshot) -> Bool {
+        application.bundleIdentifier.caseInsensitiveCompare("com.google.Chrome") == .orderedSame
+            || application.name.caseInsensitiveCompare("Google Chrome") == .orderedSame
+    }
+
+    private static func isChromeMeetApplication(_ application: ApplicationSnapshot) -> Bool {
+        application.bundleIdentifier.lowercased().hasPrefix("com.google.chrome.app.")
+            && application.name.localizedCaseInsensitiveContains("Google Meet")
+            && !isCaptureHelper(application)
     }
 }

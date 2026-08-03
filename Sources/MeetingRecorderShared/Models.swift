@@ -10,24 +10,76 @@ public enum RecorderPhase: String, Codable, Sendable {
 }
 
 public struct RecorderMetrics: Codable, Equatable, Sendable {
+    public static let effectivelySilentPeakDB = -70.0
+
     public var lateFrames: Int64
     public var gapFrames: Int64
     public var overlapFrames: Int64
     public var clippedSamples: Int64
     public var writerBackpressureEvents: Int64
+    public var applicationRMSLevelDB: Double?
+    public var applicationPeakLevelDB: Double?
+    public var microphoneRMSLevelDB: Double?
+    public var microphonePeakLevelDB: Double?
+
+    public var applicationIsEffectivelySilent: Bool {
+        guard let applicationPeakLevelDB else { return false }
+        return applicationPeakLevelDB <= Self.effectivelySilentPeakDB
+    }
 
     public init(
         lateFrames: Int64 = 0,
         gapFrames: Int64 = 0,
         overlapFrames: Int64 = 0,
         clippedSamples: Int64 = 0,
-        writerBackpressureEvents: Int64 = 0
+        writerBackpressureEvents: Int64 = 0,
+        applicationRMSLevelDB: Double? = nil,
+        applicationPeakLevelDB: Double? = nil,
+        microphoneRMSLevelDB: Double? = nil,
+        microphonePeakLevelDB: Double? = nil
     ) {
         self.lateFrames = lateFrames
         self.gapFrames = gapFrames
         self.overlapFrames = overlapFrames
         self.clippedSamples = clippedSamples
         self.writerBackpressureEvents = writerBackpressureEvents
+        self.applicationRMSLevelDB = applicationRMSLevelDB
+        self.applicationPeakLevelDB = applicationPeakLevelDB
+        self.microphoneRMSLevelDB = microphoneRMSLevelDB
+        self.microphonePeakLevelDB = microphonePeakLevelDB
+    }
+}
+
+public enum RecorderTranscriptionStage: String, Codable, Sendable {
+    case preparing
+    case loadingModel = "loading-model"
+    case transcribingMeeting = "transcribing-meeting"
+    case transcribingMicrophone = "transcribing-microphone"
+    case identifyingParticipants = "identifying-participants"
+    case writingTranscript = "writing-transcript"
+    case completed
+    case failed
+}
+
+public struct RecorderTranscriptionProgress: Codable, Equatable, Sendable {
+    public var stage: RecorderTranscriptionStage
+    public var fractionCompleted: Double
+    public var detectedLanguages: [String]
+    public var participants: [String]
+    public var error: String?
+
+    public init(
+        stage: RecorderTranscriptionStage,
+        fractionCompleted: Double,
+        detectedLanguages: [String] = [],
+        participants: [String] = [],
+        error: String? = nil
+    ) {
+        self.stage = stage
+        self.fractionCompleted = min(1, max(0, fractionCompleted))
+        self.detectedLanguages = detectedLanguages
+        self.participants = participants
+        self.error = error
     }
 }
 
@@ -50,6 +102,9 @@ public struct RecorderState: Codable, Equatable, Sendable {
     public var finalSourcesPath: String?
     public var transcriptionInputPath: String?
     public var transcriptPath: String?
+    public var rawTranscriptPath: String?
+    public var debugLogPath: String?
+    public var transcriptionProgress: RecorderTranscriptionProgress?
     public var warning: String?
     public var lastError: String?
     public var metrics: RecorderMetrics
@@ -70,6 +125,9 @@ public struct RecorderState: Codable, Equatable, Sendable {
         finalSourcesPath: String? = nil,
         transcriptionInputPath: String? = nil,
         transcriptPath: String? = nil,
+        rawTranscriptPath: String? = nil,
+        debugLogPath: String? = nil,
+        transcriptionProgress: RecorderTranscriptionProgress? = nil,
         warning: String? = nil,
         lastError: String? = nil,
         metrics: RecorderMetrics = .init()
@@ -90,6 +148,9 @@ public struct RecorderState: Codable, Equatable, Sendable {
         self.finalSourcesPath = finalSourcesPath
         self.transcriptionInputPath = transcriptionInputPath
         self.transcriptPath = transcriptPath
+        self.rawTranscriptPath = rawTranscriptPath
+        self.debugLogPath = debugLogPath
+        self.transcriptionProgress = transcriptionProgress
         self.warning = warning
         self.lastError = lastError
         self.metrics = metrics
@@ -109,10 +170,11 @@ public enum RecorderConfigurationKey: String, Codable, CaseIterable, Sendable {
     case language
     case diarization
     case speakerCount = "speaker-count"
+    case debug
 }
 
 public struct RecorderConfiguration: Codable, Equatable, Sendable {
-    public static let schemaVersion = 2
+    public static let schemaVersion = 3
     public static let defaultTranscriptionModel = "large-v3-v20240930_626MB"
     public static let defaultMinimumDuration: TimeInterval = 30
 
@@ -123,6 +185,7 @@ public struct RecorderConfiguration: Codable, Equatable, Sendable {
     public var language: TranscriptionLanguage
     public var diarizationEnabled: Bool
     public var speakerCount: Int?
+    public var debugEnabled: Bool
 
     public init(
         outputDirectory: String,
@@ -130,7 +193,8 @@ public struct RecorderConfiguration: Codable, Equatable, Sendable {
         minimumDuration: TimeInterval = Self.defaultMinimumDuration,
         language: TranscriptionLanguage = .automatic,
         diarizationEnabled: Bool = true,
-        speakerCount: Int? = nil
+        speakerCount: Int? = nil,
+        debugEnabled: Bool = false
     ) {
         self.schemaVersion = Self.schemaVersion
         self.outputDirectory = outputDirectory
@@ -139,11 +203,12 @@ public struct RecorderConfiguration: Codable, Equatable, Sendable {
         self.language = language
         self.diarizationEnabled = diarizationEnabled
         self.speakerCount = speakerCount
+        self.debugEnabled = debugEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, outputDirectory, transcriptionModel, minimumDuration
-        case language, diarizationEnabled, speakerCount
+        case language, diarizationEnabled, speakerCount, debugEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -157,6 +222,7 @@ public struct RecorderConfiguration: Codable, Equatable, Sendable {
         self.language = try container.decodeIfPresent(TranscriptionLanguage.self, forKey: .language) ?? .automatic
         self.diarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .diarizationEnabled) ?? true
         self.speakerCount = try container.decodeIfPresent(Int.self, forKey: .speakerCount)
+        self.debugEnabled = try container.decodeIfPresent(Bool.self, forKey: .debugEnabled) ?? false
     }
 
     public func value(for key: RecorderConfigurationKey) -> String {
@@ -167,6 +233,7 @@ public struct RecorderConfiguration: Codable, Equatable, Sendable {
         case .language: return language.rawValue
         case .diarization: return String(diarizationEnabled)
         case .speakerCount: return speakerCount.map(String.init) ?? "auto"
+        case .debug: return String(debugEnabled)
         }
     }
 

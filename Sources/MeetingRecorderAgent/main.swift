@@ -19,6 +19,7 @@ struct MeetingRecorderAgentMain {
 
 final class AgentDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private let paths = RecorderPaths()
+    private lazy var logger = FileLogger(fileURL: paths.logFile)
     private var coordinator: RecorderCoordinator?
     private var server: UnixSocketServer?
     private var idleTimer: DispatchSourceTimer?
@@ -27,6 +28,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCe
     private var terminationInProgress = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        logger.log(.info, "MeetingRecorder agent launched, PID \(getpid()).")
         do {
             let coordinator = try RecorderCoordinator(paths: paths)
             self.coordinator = coordinator
@@ -40,11 +42,13 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 do {
                     try server.start()
                 } catch {
+                    self.logger.log(.error, "Control socket startup failed: \(error.localizedDescription)")
                     fputs("MeetingRecorder agent failed to start: \(error.localizedDescription)\n", stderr)
                     await MainActor.run { NSApplication.shared.terminate(nil) }
                 }
             }
         } catch {
+            logger.log(.error, "Agent initialization failed: \(error.localizedDescription)")
             fputs("MeetingRecorder agent initialization failed: \(error.localizedDescription)\n", stderr)
             NSApplication.shared.terminate(nil)
         }
@@ -53,6 +57,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCe
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationInProgress, let coordinator else { return .terminateNow }
         terminationInProgress = true
+        logger.log(.info, "MeetingRecorder agent termination requested.")
         Task {
             await coordinator.stopForLifecycleEvent("the recorder application is terminating")
             await MainActor.run {

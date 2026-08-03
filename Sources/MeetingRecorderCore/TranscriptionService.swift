@@ -41,8 +41,14 @@ public struct MeetingTranscriptSegment: Equatable, Sendable {
 
 public struct MeetingTranscriptionOutput: Sendable {
     public let transcriptURL: URL
+    public let rawTranscriptURL: URL?
     public let warning: String?
+    public let detectedLanguages: [String]
+    public let participants: [String]
 }
+
+public typealias MeetingTranscriptionProgressHandler = @Sendable (RecorderTranscriptionProgress) -> Void
+public typealias MeetingTranscriptionDiagnosticHandler = @Sendable (String) -> Void
 
 struct MeetingTranscriptWord: Equatable, Sendable {
     let start: TimeInterval
@@ -58,7 +64,8 @@ struct MeetingSpeakerInterval: Equatable, Sendable {
 
 public enum MeetingTranscriber {
     public static let defaultModel = RecorderConfiguration.defaultTranscriptionModel
-    static let chunkDuration: TimeInterval = 10 * 60
+    static let chunkDuration: TimeInterval = 60
+    private static let meaningfulPeakAmplitude = pow(10.0, -70.0 / 20.0)
 
     public static func transcribe(
         audioURL: URL,
@@ -66,8 +73,13 @@ public enum MeetingTranscriber {
         model: String = defaultModel,
         language: TranscriptionLanguage = .automatic,
         diarizationEnabled: Bool = true,
-        speakerCount: Int? = nil
+        speakerCount: Int? = nil,
+        debugEnabled: Bool = false,
+        progressHandler: MeetingTranscriptionProgressHandler? = nil,
+        diagnosticHandler: MeetingTranscriptionDiagnosticHandler? = nil
     ) async throws -> MeetingTranscriptionOutput {
+        let progress = MeetingProgressReporter(handler: progressHandler)
+        progress.report(stage: .preparing, fraction: 0, force: true)
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
         let sessionDirectory = audioURL.deletingLastPathComponent()
         let asset = AVURLAsset(url: audioURL)
@@ -81,7 +93,9 @@ public enum MeetingTranscriber {
         guard duration.isNumeric, duration.seconds > 0 else {
             throw MeetingRecorderError.io("The transcription source has no readable duration.")
         }
+        diagnosticHandler?("Transcription input opened: audioTracks=\(tracks.count), durationSeconds=\(String(format: "%.3f", duration.seconds)), debug=\(debugEnabled).")
 
+        progress.report(stage: .loadingModel, fraction: 0.03, force: true)
         let config = WhisperKitConfig(
             model: model,
             downloadBase: modelDirectory,
@@ -89,16 +103,22 @@ public enum MeetingTranscriber {
             prewarm: true
         )
         let whisper = try await WhisperKit(config)
+        diagnosticHandler?("WhisperKit model loaded: model=\(model), language=\(language.rawValue), sequentialWorkers=1.")
+        progress.report(stage: .transcribingMeeting, fraction: 0.10, force: true)
         let automaticallyDetectLanguage = language == .automatic
         let options = DecodingOptions(
             language: automaticallyDetectLanguage ? nil : language.rawValue,
             usePrefillPrompt: !automaticallyDetectLanguage,
             detectLanguage: automaticallyDetectLanguage,
+            skipSpecialTokens: !debugEnabled,
             wordTimestamps: true,
-            chunkingStrategy: .vad
+            concurrentWorkerCount: 1,
+            chunkingStrategy: nil
         )
         let meeting: TrackTranscription
         let microphone: TrackTranscription?
+        let trackCount = tracks.count
+        var detectedLanguages = Set<String>()
         do {
             meeting = try await transcribeTrack(
                 tracks[0],
@@ -106,16 +126,34 @@ public enum MeetingTranscriber {
                 speaker: .meeting,
                 temporaryDirectory: sessionDirectory,
                 whisper: whisper,
-                options: options
+                options: options,
+                trackIndex: 0,
+                trackCount: trackCount,
+                detectedLanguages: &detectedLanguages,
+                progress: progress,
+                preserveRawSegments: debugEnabled,
+                diagnosticHandler: diagnosticHandler
             )
             if tracks.count == 2 {
+                progress.report(
+                    stage: .transcribingMicrophone,
+                    fraction: transcriptionFraction(completedWork: duration.seconds, totalWork: duration.seconds * 2),
+                    languages: detectedLanguages,
+                    force: true
+                )
                 microphone = try await transcribeTrack(
                     tracks[1],
                     assetDuration: duration.seconds,
                     speaker: .you,
                     temporaryDirectory: sessionDirectory,
                     whisper: whisper,
-                    options: options
+                    options: options,
+                    trackIndex: 1,
+                    trackCount: trackCount,
+                    detectedLanguages: &detectedLanguages,
+                    progress: progress,
+                    preserveRawSegments: debugEnabled,
+                    diagnosticHandler: diagnosticHandler
                 )
             } else {
                 microphone = nil
@@ -129,15 +167,39 @@ public enum MeetingTranscriber {
         let speakerIdentification: String
         let speakerWarning: String?
         let meetingSegments: [MeetingTranscriptSegment]
-        if diarizationEnabled {
+        let participants: [String]
+        let applicationTrackSilent = tracks.count == 2 && !meeting.hasMeaningfulAudio
+        let microphoneHasMeaningfulAudio = microphone?.hasMeaningfulAudio ?? false
+        if applicationTrackSilent {
+            diagnosticHandler?("Application track classified as silent; diarization skipped and only microphone speech will be retained.")
+            meetingSegments = []
+            speakerIdentification = "The application track was effectively silent, so speaker identification was skipped; microphone speech is labelled `You`."
+            speakerWarning = "The application audio track was effectively silent. If other participants spoke, select the main browser application for the next recording."
+            participants = microphoneHasMeaningfulAudio ? ["You"] : []
+        } else if diarizationEnabled {
             do {
+                let transcriptionLanguages = detectedLanguages
+                progress.report(
+                    stage: .identifyingParticipants,
+                    fraction: 0.76,
+                    languages: transcriptionLanguages,
+                    force: true
+                )
                 let diarization = try await diarizeMeetingTrack(
                     tracks[0],
                     duration: duration,
                     temporaryDirectory: sessionDirectory,
                     modelDirectory: modelDirectory.appendingPathComponent("SpeakerKit", isDirectory: true),
-                    speakerCount: speakerCount
+                    speakerCount: speakerCount,
+                    progressHandler: { fraction in
+                        progress.report(
+                            stage: .identifyingParticipants,
+                            fraction: 0.76 + (0.20 * fraction),
+                            languages: transcriptionLanguages
+                        )
+                    }
                 )
+                diagnosticHandler?("Speaker diarization completed: speakers=\(diarization.speakerCount), intervals=\(diarization.intervals.count).")
                 meetingSegments = attributedMeetingSegments(
                     words: meeting.words,
                     fallback: meeting.segments,
@@ -148,16 +210,23 @@ public enum MeetingTranscriber {
                     ? "SpeakerKit detected 1 \(speakerKind)."
                     : "SpeakerKit detected \(diarization.speakerCount) \(speakerKind)s."
                 speakerWarning = nil
+                participants = participantLabels(
+                    remoteSpeakerCount: diarization.speakerCount,
+                    includeYou: microphoneHasMeaningfulAudio
+                )
             } catch {
+                diagnosticHandler?("Speaker diarization failed: \(error.localizedDescription)")
                 meetingSegments = meeting.segments
                 let speechKind = tracks.count == 2 ? "remote speech" : "speech"
                 speakerIdentification = "Speaker identification was unavailable; \(speechKind) is labelled `Meeting`. \(error.localizedDescription)"
                 speakerWarning = "Transcript saved, but speaker identification failed: \(error.localizedDescription)"
+                participants = fallbackParticipantLabels(includeYou: microphoneHasMeaningfulAudio)
             }
         } else {
             meetingSegments = meeting.segments
             speakerIdentification = "Speaker identification is disabled; meeting audio is labelled `Meeting`."
             speakerWarning = nil
+            participants = fallbackParticipantLabels(includeYou: microphoneHasMeaningfulAudio)
         }
 
         let segments = meetingSegments + (microphone?.segments ?? [])
@@ -166,6 +235,19 @@ public enum MeetingTranscriber {
             return $0.start < $1.start
         }
         let languages = meeting.languages.union(microphone?.languages ?? Set<String>()).sorted()
+        detectedLanguages.formUnion(languages)
+        let warnings = uniqueWarnings(
+            [speakerWarning].compactMap { $0 }
+                + coverageWarnings(for: meeting, trackName: "application")
+                + coverageWarnings(for: microphone, trackName: "microphone")
+        )
+        progress.report(
+            stage: .writingTranscript,
+            fraction: 0.98,
+            languages: detectedLanguages,
+            participants: participants,
+            force: true
+        )
         let transcriptURL = transcriptURL(for: audioURL)
         let markdown = renderMarkdown(
             segments: sorted,
@@ -173,13 +255,57 @@ public enum MeetingTranscriber {
             languages: languages,
             speakerIdentification: speakerIdentification,
             hasSeparateMicrophoneTrack: microphone != nil,
-            configuredLanguage: language
+            configuredLanguage: language,
+            applicationTrackIsSilent: applicationTrackSilent,
+            warnings: warnings
         )
         guard let transcriptData = markdown.data(using: .utf8) else {
             throw MeetingRecorderError.io("Unable to encode the transcript as UTF-8.")
         }
         try transcriptData.write(to: transcriptURL, options: .atomic)
-        return MeetingTranscriptionOutput(transcriptURL: transcriptURL, warning: speakerWarning)
+        let rawTranscriptURL: URL?
+        if debugEnabled {
+            let debugURL = Self.rawTranscriptURL(for: audioURL)
+            let rawSegments = meeting.rawSegments + (microphone?.rawSegments ?? [])
+            let rawMarkdown = renderMarkdown(
+                segments: rawSegments.sorted {
+                    if $0.start == $1.start { return $0.speaker.label < $1.speaker.label }
+                    return $0.start < $1.start
+                },
+                model: model,
+                languages: languages,
+                speakerIdentification: "Raw Whisper output before control-token cleanup and speaker diarization.",
+                hasSeparateMicrophoneTrack: microphone != nil,
+                configuredLanguage: language,
+                warnings: ["Debug artifact: control and timestamp tokens are intentionally preserved."],
+                sanitizeControlTokens: false
+            )
+            guard let rawTranscriptData = rawMarkdown.data(using: .utf8) else {
+                throw MeetingRecorderError.io("Unable to encode the raw debug transcript as UTF-8.")
+            }
+            try rawTranscriptData.write(to: debugURL, options: .atomic)
+            rawTranscriptURL = debugURL
+        } else {
+            rawTranscriptURL = nil
+        }
+        diagnosticHandler?(
+            "Transcript output written: clean=\(transcriptURL.lastPathComponent), rawDebug=\(rawTranscriptURL?.lastPathComponent ?? "disabled"), segments=\(sorted.count), participants=\(participants.count)."
+        )
+        let finalLanguages = detectedLanguages.sorted()
+        progress.report(
+            stage: .completed,
+            fraction: 1,
+            languages: Set(finalLanguages),
+            participants: participants,
+            force: true
+        )
+        return MeetingTranscriptionOutput(
+            transcriptURL: transcriptURL,
+            rawTranscriptURL: rawTranscriptURL,
+            warning: warnings.isEmpty ? nil : warnings.joined(separator: " "),
+            detectedLanguages: finalLanguages,
+            participants: participants
+        )
     }
 
     public static func renderMarkdown(
@@ -188,13 +314,23 @@ public enum MeetingTranscriber {
         languages: [String] = [],
         speakerIdentification: String? = nil,
         hasSeparateMicrophoneTrack: Bool = true,
-        configuredLanguage: TranscriptionLanguage = .automatic
+        configuredLanguage: TranscriptionLanguage = .automatic,
+        applicationTrackIsSilent: Bool = false,
+        warnings: [String] = [],
+        sanitizeControlTokens: Bool = true
     ) -> String {
-        let speakersDescription = hasSeparateMicrophoneTrack
-            ? "`Speaker 1`, `Speaker 2`, etc. are voices on the meeting track; `You` is the microphone."
-            : "`Speaker 1`, `Speaker 2`, etc. are diarized voices in this mixed audio file; no separate microphone track was available."
+        let speakersDescription: String
+        if !sanitizeControlTokens {
+            speakersDescription = "`Meeting` and `You` identify the original application and microphone tracks; speaker diarization is intentionally not applied."
+        } else if applicationTrackIsSilent {
+            speakersDescription = "The application track was silent; only non-silent microphone speech is labelled `You`."
+        } else if hasSeparateMicrophoneTrack {
+            speakersDescription = "`Speaker 1`, `Speaker 2`, etc. are voices on the meeting track; `You` is the microphone."
+        } else {
+            speakersDescription = "`Speaker 1`, `Speaker 2`, etc. are diarized voices in this mixed audio file; no separate microphone track was available."
+        }
         var lines = [
-            "# Meeting transcript",
+            sanitizeControlTokens ? "# Meeting transcript" : "# Raw Whisper transcript (debug)",
             "",
             "- Model: `\(model)`",
             "- Language: \(languageModeDescription(configuredLanguage))",
@@ -206,12 +342,19 @@ public enum MeetingTranscriber {
         if let speakerIdentification {
             lines.append("- Speaker identification: \(speakerIdentification)")
         }
+        for warning in warnings {
+            lines.append("- Warning: \(warning)")
+        }
         lines.append(contentsOf: ["", "## Transcript", ""])
         if segments.isEmpty {
             lines.append("_No speech was detected._")
         } else {
             for segment in segments {
-                lines.append("[\(formatTimestamp(segment.start))] **\(segment.speaker.label):** \(segment.text)")
+                let text = sanitizeControlTokens
+                    ? sanitizedTranscriptText(segment.text)
+                    : segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                lines.append("[\(formatTimestamp(segment.start))] **\(segment.speaker.label):** \(text)")
                 lines.append("")
             }
         }
@@ -221,15 +364,22 @@ public enum MeetingTranscriber {
     private static func segments(
         from results: [TranscriptionResult],
         speaker: TranscriptSpeaker,
-        timeOffset: TimeInterval = 0
+        timeOffset: TimeInterval = 0,
+        maximumEnd: TimeInterval,
+        sanitizeControlTokens: Bool = true
     ) -> [MeetingTranscriptSegment] {
         results.flatMap(\.segments).compactMap { segment in
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = sanitizeControlTokens
+                ? sanitizedTranscriptText(segment.text)
+                : segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
+            let start = min(maximumEnd, max(0, timeOffset + TimeInterval(segment.start)))
+            let end = min(maximumEnd, max(start, timeOffset + TimeInterval(segment.end)))
+            guard start < maximumEnd else { return nil }
             return MeetingTranscriptSegment(
                 speaker: speaker,
-                start: timeOffset + TimeInterval(segment.start),
-                end: timeOffset + TimeInterval(segment.end),
+                start: start,
+                end: end,
                 text: text
             )
         }
@@ -237,8 +387,23 @@ public enum MeetingTranscriber {
 
     private struct TrackTranscription {
         var segments: [MeetingTranscriptSegment] = []
+        var rawSegments: [MeetingTranscriptSegment] = []
         var words: [MeetingTranscriptWord] = []
         var languages: Set<String> = []
+        var peakAmplitude: Float = 0
+        var activeFrameCount = 0
+        var uncoveredAudibleRanges: [ClosedRange<TimeInterval>] = []
+
+        var hasMeaningfulAudio: Bool {
+            Double(peakAmplitude) > meaningfulPeakAmplitude && activeFrameCount >= 2
+        }
+    }
+
+    private struct ChunkAudioStats {
+        let peakAmplitude: Float
+        let activeFrameCount: Int
+
+        var containsSpeechLikeAudio: Bool { activeFrameCount >= 2 }
     }
 
     private static func transcribeTrack(
@@ -247,7 +412,13 @@ public enum MeetingTranscriber {
         speaker: TranscriptSpeaker,
         temporaryDirectory: URL,
         whisper: WhisperKit,
-        options: DecodingOptions
+        options: DecodingOptions,
+        trackIndex: Int,
+        trackCount: Int,
+        detectedLanguages: inout Set<String>,
+        progress: MeetingProgressReporter,
+        preserveRawSegments: Bool,
+        diagnosticHandler: MeetingTranscriptionDiagnosticHandler?
     ) async throws -> TrackTranscription {
         var transcription = TrackTranscription()
         var offset: TimeInterval = 0
@@ -259,6 +430,7 @@ public enum MeetingTranscriber {
                 ".transcription-\(speaker.temporaryFileComponent)-\(UUID().uuidString).m4a"
             )
             let results: [TranscriptionResult]
+            let stats: ChunkAudioStats
             do {
                 try await exportTrack(
                     track,
@@ -268,24 +440,90 @@ public enum MeetingTranscriber {
                     ),
                     to: temporaryAudio
                 )
-                results = try await whisper.transcribe(audioPath: temporaryAudio.path, decodeOptions: options)
+                let completedBeforeChunk = (Double(trackIndex) * assetDuration) + offset
+                let totalWork = assetDuration * Double(trackCount)
+                let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: temporaryAudio.path)
+                stats = chunkAudioStats(audio)
+                transcription.peakAmplitude = max(transcription.peakAmplitude, stats.peakAmplitude)
+                transcription.activeFrameCount += stats.activeFrameCount
+                diagnosticHandler?(
+                    "Transcription chunk prepared: track=\(trackIndex + 1)/\(trackCount), offsetSeconds=\(String(format: "%.3f", offset)), durationSeconds=\(String(format: "%.3f", duration)), peak=\(String(format: "%.6f", stats.peakAmplitude)), activeFrames=\(stats.activeFrameCount)."
+                )
+                if Double(stats.peakAmplitude) <= meaningfulPeakAmplitude {
+                    results = []
+                    diagnosticHandler?("Transcription chunk skipped because its measured peak was below the silence threshold.")
+                } else {
+                    results = try await whisper.transcribe(
+                        audioArray: audio,
+                        decodeOptions: options,
+                        callback: { update in
+                            let estimatedChunkProgress = min(duration, Double(update.windowId + 1) * 30)
+                            progress.report(
+                                stage: speaker == .you ? .transcribingMicrophone : .transcribingMeeting,
+                                fraction: transcriptionFraction(
+                                    completedWork: completedBeforeChunk + estimatedChunkProgress,
+                                    totalWork: totalWork
+                                )
+                            )
+                            return nil
+                        }
+                    )
+                }
                 try? FileManager.default.removeItem(at: temporaryAudio)
             } catch {
                 try? FileManager.default.removeItem(at: temporaryAudio)
                 throw error
             }
-            transcription.segments += segments(from: results, speaker: speaker, timeOffset: offset)
-            transcription.words += results.flatMap(\.segments).flatMap { $0.words ?? [] }.map {
-                MeetingTranscriptWord(
-                    start: offset + TimeInterval($0.start),
-                    end: offset + TimeInterval($0.end),
-                    text: $0.word
+            let chunkSegments = segments(
+                from: results,
+                speaker: speaker,
+                timeOffset: offset,
+                maximumEnd: assetDuration
+            )
+            if chunkSegments.isEmpty, stats.containsSpeechLikeAudio {
+                transcription.uncoveredAudibleRanges.append(offset...(offset + duration))
+            }
+            transcription.segments += chunkSegments
+            if preserveRawSegments {
+                transcription.rawSegments += segments(
+                    from: results,
+                    speaker: speaker,
+                    timeOffset: offset,
+                    maximumEnd: assetDuration,
+                    sanitizeControlTokens: false
                 )
             }
+            transcription.words += results.flatMap(\.segments).flatMap { $0.words ?? [] }.compactMap {
+                let start = min(assetDuration, max(0, offset + TimeInterval($0.start)))
+                let end = min(assetDuration, max(start, offset + TimeInterval($0.end)))
+                let text = sanitizedTranscriptText($0.word)
+                guard start < assetDuration, !text.isEmpty else { return nil }
+                return MeetingTranscriptWord(start: start, end: end, text: text)
+            }
             transcription.languages.formUnion(results.map(\.language).filter { !$0.isEmpty })
+            diagnosticHandler?(
+                "Transcription chunk decoded: cleanedSegments=\(chunkSegments.count), resultLanguages=\(results.map(\.language).filter { !$0.isEmpty }.joined(separator: ","))."
+            )
+            detectedLanguages.formUnion(transcription.languages)
             offset += duration
+            progress.report(
+                stage: speaker == .you ? .transcribingMicrophone : .transcribingMeeting,
+                fraction: transcriptionFraction(
+                    completedWork: (Double(trackIndex) * assetDuration) + offset,
+                    totalWork: assetDuration * Double(trackCount)
+                ),
+                languages: detectedLanguages,
+                force: true
+            )
         }
         return transcription
+    }
+
+    private static func chunkAudioStats(_ audio: [Float]) -> ChunkAudioStats {
+        ChunkAudioStats(
+            peakAmplitude: audio.reduce(Float.zero) { max($0, abs($1)) },
+            activeFrameCount: EnergyVAD().voiceActivity(in: audio).filter { $0 }.count
+        )
     }
 
     static func attributedMeetingSegments(
@@ -365,7 +603,8 @@ public enum MeetingTranscriber {
         duration: CMTime,
         temporaryDirectory: URL,
         modelDirectory: URL,
-        speakerCount: Int?
+        speakerCount: Int?,
+        progressHandler: @escaping @Sendable (Double) -> Void
     ) async throws -> MeetingDiarization {
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
         let temporaryAudio = temporaryDirectory.appendingPathComponent(
@@ -383,7 +622,8 @@ public enum MeetingTranscriber {
                 options: PyannoteDiarizationOptions(
                     numberOfSpeakers: speakerCount,
                     useExclusiveReconciliation: true
-                )
+                ),
+                progressCallback: { progressHandler($0.fractionCompleted) }
             )
             await speakerKit.unloadModels()
         } catch {
@@ -443,6 +683,23 @@ public enum MeetingTranscriber {
         )
     }
 
+    static func rawTranscriptURL(for audioURL: URL) -> URL {
+        let cleanURL = transcriptURL(for: audioURL)
+        return cleanURL.deletingPathExtension()
+            .appendingPathExtension("raw")
+            .appendingPathExtension("md")
+    }
+
+    static func sanitizedTranscriptText(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: #"<\|[^>]+\|>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func languageDisplayName(_ code: String) -> String {
         switch code.lowercased() {
         case "en", "english": return "English (en)"
@@ -457,5 +714,90 @@ public enum MeetingTranscriber {
         case .english: return "forced English (en)."
         case .french: return "forced French (fr)."
         }
+    }
+
+    private static func transcriptionFraction(completedWork: TimeInterval, totalWork: TimeInterval) -> Double {
+        guard totalWork > 0 else { return 0.10 }
+        return 0.10 + (0.65 * min(1, max(0, completedWork / totalWork)))
+    }
+
+    private static func participantLabels(
+        remoteSpeakerCount: Int,
+        includeYou: Bool
+    ) -> [String] {
+        let remote = (0..<remoteSpeakerCount).map { "Speaker \($0 + 1)" }
+        return (includeYou ? ["You"] : []) + remote
+    }
+
+    private static func fallbackParticipantLabels(includeYou: Bool) -> [String] {
+        (includeYou ? ["You"] : []) + ["Meeting"]
+    }
+
+    private static func coverageWarnings(
+        for transcription: TrackTranscription?,
+        trackName: String
+    ) -> [String] {
+        guard let ranges = transcription?.uncoveredAudibleRanges, !ranges.isEmpty else { return [] }
+        let displayed = ranges.prefix(5).map {
+            "\(formatTimestamp($0.lowerBound))–\(formatTimestamp($0.upperBound))"
+        }
+        let additional = ranges.count > displayed.count ? " and \(ranges.count - displayed.count) more range(s)" : ""
+        return [
+            "Audible \(trackName) audio produced no transcript text at \(displayed.joined(separator: ", "))\(additional). Retranscription was saved, but these ranges should be reviewed."
+        ]
+    }
+
+    private static func uniqueWarnings(_ warnings: [String]) -> [String] {
+        var seen = Set<String>()
+        return warnings.compactMap { warning in
+            let trimmed = warning.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
+    }
+}
+
+private final class MeetingProgressReporter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handler: MeetingTranscriptionProgressHandler?
+    private var lastFraction: Double = 0
+    private var lastReportedAt = Date.distantPast
+    private var lastStage: RecorderTranscriptionStage?
+    private var detectedLanguages = Set<String>()
+    private var identifiedParticipants: [String] = []
+
+    init(handler: MeetingTranscriptionProgressHandler?) {
+        self.handler = handler
+    }
+
+    func report(
+        stage: RecorderTranscriptionStage,
+        fraction: Double,
+        languages: Set<String> = [],
+        participants: [String] = [],
+        force: Bool = false
+    ) {
+        guard let handler else { return }
+        lock.lock()
+        let now = Date()
+        let clampedFraction = min(1, max(lastFraction, fraction))
+        let stageChanged = stage != lastStage
+        detectedLanguages.formUnion(languages)
+        if !participants.isEmpty { identifiedParticipants = participants }
+        guard force || stageChanged || now.timeIntervalSince(lastReportedAt) >= 0.25 else {
+            lock.unlock()
+            return
+        }
+        lastFraction = clampedFraction
+        lastStage = stage
+        lastReportedAt = now
+        let update = RecorderTranscriptionProgress(
+            stage: stage,
+            fractionCompleted: clampedFraction,
+            detectedLanguages: detectedLanguages.sorted(),
+            participants: identifiedParticipants
+        )
+        lock.unlock()
+        handler(update)
     }
 }
