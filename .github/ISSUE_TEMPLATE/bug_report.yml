@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible MeetingRecorder problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve MeetingRecorder. Do not attach real recordings, transcripts, debug logs, certificates, private keys, or unredacted meeting details.
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: Paste the commit SHA or app version.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, Mac model, and meeting application/browser.
+      placeholder: macOS 15.x, M2 MacBook Air, Safari
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the observed result and the result you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic media and redact all private information.
+      placeholder: |
+        1. Run ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Paste only the smallest relevant, reviewed excerpt. Transcript text is almost never needed.
+      render: text
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed recordings, transcript text, participant details, meeting titles, usernames, local paths, certificates, and keys.
+          required: true

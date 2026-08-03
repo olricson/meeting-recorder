@@ -34,6 +34,7 @@ staging="$dist_dir/.MeetingRecorder.app.staging.$$"
 if [[ -e "$staging" ]]; then /bin/rm -rf "$staging"; fi
 /bin/mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Helpers" "$staging/Contents/Resources"
 /bin/cp "$repo_dir/AppResources/Info.plist" "$staging/Contents/Info.plist"
+/bin/cp "$repo_dir/LICENSE" "$staging/Contents/Resources/MeetingRecorderLicense.txt"
 /bin/cp "$repo_dir/AppResources/ThirdPartyNotices.txt" "$staging/Contents/Resources/ThirdPartyNotices.txt"
 icon_source="$repo_dir/icone.png"
 iconset="$repo_dir/.build/MeetingRecorder.iconset"

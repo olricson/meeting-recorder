@@ -33,6 +33,6 @@
     <key>NSDocumentsFolderUsageDescription</key>
     <string>MeetingRecorder only accesses Documents if you explicitly configure it as the recording destination.</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Private personal utility</string>
+    <string>Copyright © 2026 Olivier. MIT License.</string>
 </dict>
 </plist>

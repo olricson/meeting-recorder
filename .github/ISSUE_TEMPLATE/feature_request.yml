@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a focused improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and its CLI or configuration surface.
+    validations:
+      required: true
+
+  - type: textarea
+    id: implications
+    attributes:
+      label: Privacy, permissions, and compatibility
+      description: Note any changes to capture scope, storage, networking, signing, notifications, or minimum macOS version.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This request does not include real meeting content or other private data.
+          required: true

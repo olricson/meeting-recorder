@@ -1,10 +1,48 @@
+# Swift and Xcode
 .build/
 .swiftpm/
 build/
-dist/
+DerivedData/
 *.xcodeproj/xcuserdata/
-.DS_Store
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+
+# Built installation artifacts and local signing material
+dist/
 *.p12
+*.pfx
+*.pem
 *.cer
 *.crt
 *.key
+
+# Recordings, transcripts, and diagnostics must never be committed
+exemples/
+examples/private/
+recordings/
+Meetings Recordings/
+*.m4a
+*.aac
+*.caf
+*.flac
+*.mp3
+*.mp4
+*.mov
+*.wav
+*.transcript.md
+transcript.md
+transcript.raw.md
+meeting-recorder.debug.log
+*.log
+Models/
+*.mlmodelc/
+*.safetensors
+
+# Local environment and editor state
+.env
+.env.*
+!.env.example
+.DS_Store
+.AppleDouble
+.idea/
+.vscode/

@@ -5,7 +5,7 @@ prompt = no
 
 [subject]
 CN = MeetingRecorder Local Code Signing
-O = Private Local Development
+O = MeetingRecorder Local Development
 
 [extensions]
 basicConstraints = critical,CA:FALSE

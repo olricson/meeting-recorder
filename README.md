@@ -1,139 +1,228 @@
-# MeetingRecorder
+<p align="center">
+  <img src="icone.png" width="156" alt="MeetingRecorder app icon">
+</p>
 
-MeetingRecorder is a private, Apple-native macOS utility that records audio from one ScreenCaptureKit application together with the Mac's microphone. It does not use a meeting bot, virtual audio device, cloud service, or third-party runtime.
+<h1 align="center">MeetingRecorder</h1>
 
-Each retained session creates its own timestamped folder under the configured output directory. That folder contains:
+<p align="center">
+  A private, Apple-native meeting recorder with separate app and microphone tracks,<br>
+  on-device English/French transcription, and speaker diarization.
+</p>
 
-- `…Google-Meet.m4a`: a normal mixed recording for Finder and QuickTime playback.
-- `…Google-Meet.sources.mov`: a two-track, audio-only transcription master. Track 1 is the selected meeting application (“everyone else”); track 2 is the microphone (“you”). A QuickTime container is used because AVFoundation supports multiple independently named AAC tracks there; the normal playback file remains M4A.
-- `transcript.md`: an on-device English/French transcript merged by timestamp. Meeting voices are diarized as `Speaker 1`, `Speaker 2`, and so on; microphone passages are labelled `You`.
-- `transcript.raw.md` when debug mode is enabled: Whisper's pre-cleanup segment output. It intentionally retains control and timestamp tokens such as `<|transcribe|>` and does not apply speaker diarization.
-- `meeting-recorder.debug.log` when debug mode is enabled: privacy-limited application and CLI diagnostics stored at the recording-folder root.
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/macOS-15%2B-111111?logo=apple">
+  <img alt="Architecture" src="https://img.shields.io/badge/Apple%20Silicon-required-111111?logo=apple">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg">
+</p>
 
-Recordings shorter than the configured minimum duration (30 seconds by default) are discarded without saving files or their session folder. Longer recordings are saved first, then transcribed in the background. While `status` reports `transcribing`, a new recording cannot begin. If transcription fails, the audio remains safely saved and `status` reports the reason.
+MeetingRecorder captures the audio of one macOS application with ScreenCaptureKit and records the selected microphone at the same time. It creates a normal mixed recording, a two-track source master, and an optional local transcript—without a meeting bot, virtual audio device, cloud transcription service, or upload.
 
-MeetingRecorder sends no notifications while capture is starting, recording, or finalizing, so a banner cannot appear in an active screen share. Only after recording has stopped, it maintains one replaceable, silent native notification while transcription is running. It updates at stage changes and approximately every 10%, then is replaced by the normal completion, warning, or failure notification with sound. macOS notifications display textual percentage and stage information rather than a native progress bar. Notification failures include the transcription error. Authorization is requested by `meeting-recorder setup`; if denied, enable MeetingRecorder under System Settings > Notifications.
+> [!IMPORTANT]
+> This is a source-first personal project. Builds are self-signed for private installation and are not notarized. Review the [privacy and platform limitations](#privacy-and-platform-limitations) before recording a real meeting.
 
-ScreenCaptureKit filters audio at application scope. Selecting a Chrome or Safari window records all audio from that browser application, including other tabs and windows.
+## Highlights
+
+- Native ScreenCaptureKit capture for application audio and microphone input.
+- Two independent AAC source tracks: `Meeting` for the selected app and `You` for the microphone.
+- A convenient mixed M4A for Finder, QuickTime, and ordinary audio players.
+- On-device English/French transcription through [Argmax OSS](https://github.com/argmaxinc/argmax-oss-swift), using WhisperKit and SpeakerKit.
+- Speaker diarization for the meeting track; microphone speech always stays labelled `You`.
+- Scriptable `start`, `stop`, `toggle`, `status`, `list`, `config`, and `transcribe` commands.
+- Raycast Script Commands, atomic state, fragmented capture files, and recovery after an interrupted session.
+- No notification banners while capture is active, so a shared screen cannot expose recorder status.
+
+## What a recording contains
+
+Every retained session gets a timestamped folder:
+
+```text
+~/Meetings Recordings/
+└── 2026-08-03_10-30-00_Google-Meet/
+    ├── 2026-08-03_10-30-00_Google-Meet.m4a
+    ├── 2026-08-03_10-30-00_Google-Meet.sources.mov
+    ├── transcript.md
+    ├── transcript.raw.md              # debug mode only
+    └── meeting-recorder.debug.log     # debug mode only
+```
+
+The M4A is a stereo mix. The audio-only MOV is the transcription master: track 1 is application output and track 2 is microphone input. MOV is used because AVFoundation supports independently named AAC tracks there. Recordings shorter than `minimum-duration`—30 seconds by default—are discarded with their empty session folder.
 
 ## Requirements
 
-- Apple Silicon Mac running macOS 15 or later.
-- Full Xcode 16 or later on the build Mac. The installed application does not require Xcode.
-- A separately granted Microphone and Screen & System Audio Recording permission on every Mac.
-- Internet access for the first transcription on each Mac, so WhisperKit and SpeakerKit can download their models. Audio is never uploaded.
+- An Apple Silicon Mac running macOS 15 or later.
+- Full Xcode 16 or later to build. Installed copies do not need Xcode.
+- Microphone and Screen & System Audio Recording permission on each Mac.
+- Internet access for the first transcription model download. Processing after download is local.
 
-The default recording directory is the local, configurable `~/Meetings Recordings`. It is intentionally outside Documents and iCloud Drive.
+## Quick start
 
-## Build and sign privately
-
-This project uses a local self-signed identity because it is intended for two private Macs and no Apple Developer account is required.
+Clone the repository, open a terminal in it, then create a long-lived local signing identity, build, and install:
 
 ```sh
 Scripts/create-local-signing-certificate.sh
 Scripts/build-app.sh
-Scripts/export-public-certificate.sh
 Scripts/install.sh
 ~/.local/bin/meeting-recorder setup
 ```
 
-Uninstall the user-scoped app, CLI symlink, and verified Raycast commands with:
+The certificate command adds a self-signed identity named `MeetingRecorder Local Code Signing` to the login keychain. macOS may request authorization. Keep that identity stable across rebuilds so macOS has the best chance of preserving privacy grants.
+
+List available sources and make a first recording:
+
+```sh
+~/.local/bin/meeting-recorder list
+~/.local/bin/meeting-recorder start --app "Google Meet"
+~/.local/bin/meeting-recorder status
+~/.local/bin/meeting-recorder stop
+```
+
+The default output location is `~/Meetings Recordings`, outside Documents and iCloud Drive.
+
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `meeting-recorder setup` | Create local data directories and request permissions. |
+| `meeting-recorder list [--json]` | List shareable apps and windows. |
+| `meeting-recorder start [selector]` | Start recording and return after both inputs are ready. |
+| `meeting-recorder stop` | Finalize the active recording and return its path. |
+| `meeting-recorder toggle [selector]` | Start when idle; stop when recording. |
+| `meeting-recorder status [--json]` | Show capture or transcription state and progress. |
+| `meeting-recorder transcribe FILE [--wait] [--json]` | Transcribe an existing audio file. `--sync` aliases `--wait`. |
+| `meeting-recorder config list [--json]` | Show effective settings. |
+| `meeting-recorder config get KEY [--json]` | Read one setting. |
+| `meeting-recorder config set KEY VALUE [--json]` | Validate and update one setting. |
+
+Selectors are `--app NAME`, `--bundle-id ID`, or `--pid PID`. Use only one. Omitting a selector asks MeetingRecorder to choose an unambiguous meeting app or browser.
+
+```sh
+meeting-recorder start --bundle-id com.microsoft.teams2
+meeting-recorder toggle --app teams
+meeting-recorder transcribe ~/Downloads/interview.m4a --wait
+```
+
+Synchronous transcription writes progress to standard error and returns the transcript path, detected languages, and participant labels. If a recorder-produced M4A has a sibling `*.sources.mov`, retranscription automatically uses the two-track source so `You` remains distinct.
+
+## Configuration
+
+Settings are validated and written atomically to `~/Library/Application Support/MeetingRecorder/config.json`.
+
+| Key | Accepted values | Default |
+|---|---|---|
+| `output-directory` | Writable path | `~/Meetings Recordings` |
+| `transcription-model` | WhisperKit model identifier | `large-v3-v20240930_626MB` |
+| `minimum-duration` | Nonnegative seconds; `0` keeps all recordings | `30` |
+| `language` | `auto`, `en`, or `fr` | `auto` |
+| `diarization` | `true` or `false` | `true` |
+| `speaker-count` | `auto` or `1` through `20` | `auto` |
+| `debug` | `true` or `false` | `false` |
+
+Examples:
+
+```sh
+meeting-recorder config set language auto
+meeting-recorder config set minimum-duration 10
+meeting-recorder config set speaker-count 3
+meeting-recorder config set debug true
+```
+
+`language auto` supports bilingual English/French recordings. Forcing `en` or `fr` can improve consistency for a mostly monolingual meeting; ordinary borrowed words are still decoded from the audio rather than translated. `speaker-count` is a diarization hint and is ignored when diarization is off.
+
+Debug mode retains Whisper's raw timestamp/control-token transcript and a privacy-limited session log. The log includes capture levels, counters, chunk timing, detected language, diarization state, file lifecycle, and errors; it intentionally excludes transcript text and full meeting/window titles.
+
+## Transcription behavior
+
+Automatic post-recording transcription runs in the signed background agent. A new recording cannot begin while `status` reports `transcribing`. The recorder:
+
+1. Transcribes app and microphone tracks independently.
+2. Labels microphone passages as `You`.
+3. Diarizes the complete app track into stable generic labels such as `Speaker 1` and `Speaker 2`.
+4. Merges both streams chronologically into `transcript.md`.
+
+If the application track is silent, the transcript contains only `You` passages. If diarization fails, the transcript is still saved with remote passages labelled `Meeting` and the failure is reported as a warning. Models are cached under `~/Library/Application Support/MeetingRecorder/Models/`.
+
+After capture has ended, MeetingRecorder may show one replaceable silent progress notification followed by a completion, warning, or failure notification. It never posts notifications while capture is starting, recording, or finalizing.
+
+## Raycast
+
+Add `Raycast/` as a Raycast Script Commands directory, or copy its scripts into your existing commands directory. The `recorder` command accepts an optional app-name argument such as `meet` or `teams`; `recorder status` reports current state.
+
+The scripts invoke the helper inside `~/Applications/MeetingRecorder.app` directly, so Raycast's restricted `PATH` is not a problem. Raycast can exit immediately after starting a session; the app owns the recording process.
+
+## Install the same build on another Mac
+
+Privacy permissions do not sync through iCloud. Build once, install the identical signed artifact on the second Mac, and grant permissions there separately:
+
+```sh
+Scripts/build-app.sh
+Scripts/export-public-certificate.sh
+```
+
+Copy these files from `dist/` into one folder on the other Mac:
+
+```text
+MeetingRecorder.app
+MeetingRecorder-Local-Code-Signing.cer
+install-meeting-recorder.sh
+uninstall-meeting-recorder.sh
+meeting-recorder-toggle.sh
+```
+
+Then run `./install-meeting-recorder.sh`. It trusts the public certificate for the current user, installs the app and CLI, copies the Raycast toggle to `~/raycast-scripts`, and starts permission setup. The private key is not needed on the second Mac unless it will produce future builds. Never put a private `.p12` backup in iCloud Drive or this repository.
+
+Self-signed apps are not notarizable. Gatekeeper may require Control-clicking `MeetingRecorder.app` and choosing **Open** on first installation. A future public release would need Developer ID signing and notarization.
+
+## Privacy and platform limitations
+
+- ScreenCaptureKit isolates audio by application, not by browser tab or window. Selecting Chrome or Safari captures all audio attributed to that browser, including other tabs and windows.
+- A Chrome-installed Meet PWA can appear as a distinct shareable application while its audio belongs to the main Chrome process. Automatic selection therefore prefers the audio-owning browser and warns about browser-wide scope.
+- MeetingRecorder never falls back to display-wide or all-system audio capture.
+- Recordings and transcript audio are not uploaded. WhisperKit and SpeakerKit only access the network to obtain missing models.
+- Selecting an iCloud-backed output directory allows macOS—not MeetingRecorder—to sync the generated files.
+- Debug files can still reveal local paths, app identities, timing, and participant labels. Review and redact them before sharing.
+- Speaker labels identify recurring voices within one recording; they do not determine real identities.
+
+You are responsible for applicable recording laws, workplace policies, and participant consent.
+
+## Recovery and data locations
+
+The owner-only control socket and state live in `~/Library/Application Support/MeetingRecorder/`; rotating operational logs live in `~/Library/Logs/MeetingRecorder/`. Capture files use ten-second QuickTime fragments. On the next launch, the agent attempts to recover playable temporary files left by an unexpected exit.
+
+The microphone selected at start is pinned for the session. A microphone disconnect, selected-app exit, sleep notification, SIGINT, or SIGTERM triggers bounded finalization instead of a secret device switch.
+
+## Uninstall
 
 ```sh
 Scripts/uninstall.sh
 ```
 
-This preserves recordings, configuration, models, logs, permissions, certificates, private keys, and installer backups. Use `Scripts/uninstall.sh --purge-data` to additionally remove configuration, downloaded models, state, and central logs; recordings and recording-folder debug logs are still preserved. The script refuses to uninstall during active recording, finalization, or transcription unless `--force` is explicitly supplied.
+The default uninstall removes the user-scoped app, CLI symlink, and recognized Raycast scripts while preserving recordings, configuration, models, logs, permissions, signing identities, and backups. `Scripts/uninstall.sh --purge-data` also removes app support and central logs. Active work is protected unless `--force` is explicitly supplied. Recordings are never deleted.
 
-Signed builds also copy the same script to `dist/uninstall-meeting-recorder.sh`, next to `MeetingRecorder.app` and the certificate for use on the second Mac.
-
-The certificate-creation step changes the login keychain and may show a macOS authorization prompt. The private key stays in that keychain. Back it up separately as an encrypted `.p12` if future builds may happen on another Mac; do not store the private key in iCloud Drive.
-
-On the second Mac, copy `dist/MeetingRecorder.app` and the exported public certificate, then run:
+## Development
 
 ```sh
-Scripts/trust-public-certificate.sh /path/to/MeetingRecorder-Local-Code-Signing.cer
-Scripts/install.sh /path/to/MeetingRecorder.app
-~/.local/bin/meeting-recorder setup
+Scripts/test.sh
+Scripts/check-public-repo.sh
 ```
 
-If Gatekeeper asks on the first private installation, open `MeetingRecorder.app` once from Finder using Control-click → Open. Privacy grants are local to each Mac and do not sync through the shared iCloud account.
+The first command runs the Swift test suite. The second checks shell/plist syntax, tracked files and branch/tag history for common private artifacts, obvious credentials, absolute home paths, and whitespace errors. GitHub Actions runs both checks on an Apple Silicon macOS 15 runner. Dependabot monitors the pinned Swift dependency graph and workflow actions.
 
-## Commands
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and [SECURITY.md](SECURITY.md) before reporting a vulnerability. Never attach a real recording, transcript, debug log, signing certificate, or private key to a public issue.
+
+When publishing this local repository, push the intended branch explicitly. Do not use `git push --mirror`, because local tooling can maintain implementation checkpoint refs that are not part of the public branch:
 
 ```sh
-meeting-recorder setup
-meeting-recorder list [--json]
-meeting-recorder start [--app NAME | --bundle-id ID | --pid PID]
-meeting-recorder stop
-meeting-recorder transcribe AUDIO_FILE [--wait] [--json]
-meeting-recorder status [--json]
-meeting-recorder toggle [--app NAME | --bundle-id ID | --pid PID]
-meeting-recorder config list [--json]
-meeting-recorder config get KEY [--json]
-meeting-recorder config set KEY VALUE [--json]
+git log --format='%h %an <%ae> %s'
+# Configure your GitHub verified/noreply author identity before committing.
+git remote add origin git@github.com:YOUR-ACCOUNT/meeting-recorder.git
+git push -u origin HEAD:main
 ```
 
-Automatic selection does not select a Chrome-installed Google Meet/PWA application because macOS can expose that visual application while attributing its audio to the main Chrome process. When both exist, it selects main Google Chrome and warns that all Chrome tabs and windows are in scope. Other dedicated meeting applications are preferred, followed by a Meet-looking window's owner and then one unambiguous Chrome or Safari candidate. An explicit `--app`, `--bundle-id`, or `--pid` can still select the Chrome PWA at the risk of a silent application track. Selection never falls back to display-wide or all-system audio capture.
+The first command is a deliberate privacy check: author names and email addresses are part of every published commit. If old metadata is unsuitable, rewrite it before the first push rather than after others have cloned the repository.
 
-`meeting-recorder transcribe AUDIO_FILE` starts an asynchronous retranscription through the signed agent. Relative paths and `~` are expanded by the CLI. When a recorder-produced M4A has a sibling `*.sources.mov`, the two-track source is selected automatically so `You` remains distinguishable from meeting participants. Follow progress with `status`. Add `--wait` (or its `--sync` alias) to keep the CLI attached until the job succeeds or fails:
+## License
 
-```sh
-meeting-recorder transcribe ~/Downloads/meeting.m4a --wait
-```
+MeetingRecorder is available under the [MIT License](LICENSE). Third-party components retain their own terms; see [AppResources/ThirdPartyNotices.txt](AppResources/ThirdPartyNotices.txt).
 
-Synchronous mode prints percentage and stage updates to standard error, followed by the transcript path, detected language or languages, and generic participant identities such as `You`, `Speaker 1`, and `Speaker 2`. With `--json`, progress remains on standard error and the final structured response is written to standard output. The same progress, detected-language codes, and participant labels are available in `meeting-recorder status --json` under `state.transcriptionProgress`.
-
-During and after transcription, the regular human-readable `meeting-recorder status` output includes separate `Progress`, `Stage`, `Detected languages`, and `Participants` lines. The final completed or failed progress summary remains available until another recording or transcription starts.
-
-A recorder `*.sources.mov` replaces `transcript.md` in its session folder. The normal transcript preserves `You` versus meeting speakers and removes Whisper control tokens. With `debug true`, `transcript.raw.md` additionally preserves those tokens and original track labels for troubleshooting. An ordinary one-track file writes `BASENAME.transcript.md`, plus `BASENAME.transcript.raw.md` only in debug mode, beside the input and assigns generic speaker labels because no separate microphone track exists. Existing transcript output is replaced atomically. Completion and failure use the same native notifications as automatic post-recording transcription.
-
-## Configuration
-
-Configuration is validated and stored atomically in `~/Library/Application Support/MeetingRecorder/config.json`. Use `config list` to see the effective values. Supported keys are:
-
-| Key | Values | Default |
-|---|---|---|
-| `output-directory` | Writable local or protected path | `~/Meetings Recordings` |
-| `transcription-model` | Nonempty WhisperKit model identifier | `large-v3-v20240930_626MB` |
-| `minimum-duration` | Nonnegative seconds; `0` keeps every recording | `30` |
-| `language` | `auto`, `en`, or `fr` | `auto` |
-| `diarization` | `true` or `false` | `true` |
-| `speaker-count` | `auto` or an integer from 1 through 20 | `auto` |
-| `debug` | `true` or `false` | `false` |
-
-For example:
-
-```sh
-meeting-recorder config set minimum-duration 10
-meeting-recorder config set language auto
-meeting-recorder config set speaker-count 3
-meeting-recorder config set diarization false
-meeting-recorder config set debug true
-```
-
-`language auto` supports bilingual English/French recordings; forcing `en` or `fr` is useful when automatic detection is unreliable. `speaker-count` is a hint to SpeakerKit and is ignored when diarization is disabled. `debug true` retains the raw Whisper transcript and a session log containing source identity, capture levels and counters, chunk timing/energy/language results, diarization status, file lifecycle, errors, and CLI outcomes. It intentionally excludes transcript text and meeting/window titles. Debug mode is captured when recording or manual transcription starts; transcription settings are captured when recording finishes or manual transcription starts. Changing them does not alter work already in progress.
-
-## Raycast
-
-Import the scripts under `Raycast/` as Script Commands. They invoke the helper with an absolute path, so Raycast's restricted `PATH` does not matter.
-
-## State and recovery
-
-State and the owner-only control socket live under `~/Library/Application Support/MeetingRecorder/`. The always-on rotating operational log lives under `~/Library/Logs/MeetingRecorder/`; debug mode additionally copies privacy-limited session diagnostics to `meeting-recorder.debug.log` in the recording folder. While recording, both outputs use ten-second fragmented QuickTime containers; after an unexpected process exit the next agent launch attempts to recover playable temporary files. On a normal stop, the one-track mixed file is exported to M4A while the two-track source master remains an audio-only MOV.
-
-Transcription uses Argmax's `WhisperKit` package and the multilingual `large-v3-v20240930_626MB` model with automatic language detection enabled for each one-minute chunk. Chunks are decoded sequentially so an individual inference failure aborts with a visible error instead of silently dropping part of the transcript. English and French can appear in the same recording. The two source tracks are transcribed separately and merged chronologically. Generated word and segment timestamps are constrained to the media duration; audible one-minute ranges that return no transcript text are listed as warnings for review.
-
-Argmax `SpeakerKit` diarizes the complete meeting track with Pyannote so its generic `Speaker 1`, `Speaker 2`, etc. labels remain stable throughout one recording. It identifies recurring voices, not people's real names; assigning names would require a separate enrollment or editing workflow. The microphone track always remains `You`. If the recorded application track is effectively silent, diarization is skipped, only microphone speech is labelled `You`, and a warning is reported after recording has ended. If diarization otherwise fails, the transcript is still saved with remote passages labelled `Meeting`, and `status` reports a warning.
-
-Models are downloaded once and retained under `~/Library/Application Support/MeetingRecorder/Models/`; subsequent processing is local. The first transcription takes longer while both model sets download and initialize. Stable whole-meeting diarization also holds the 16 kHz meeting track in memory (about 230 MB per recorded hour, in addition to model memory).
-
-The app icon is generated during the signed build from `icone.png` at the repository root and embedded as `MeetingRecorder.icns` for Finder and native notifications.
-
-The microphone selected at the beginning is pinned for the session. If it disconnects, the recorder finalizes the usable portion instead of silently switching to another microphone. Sleep, source-application termination, SIGINT, and SIGTERM also trigger finalization.
-
-## Privacy and consent
-
-MeetingRecorder never uploads recordings or transcript audio. WhisperKit and SpeakerKit contact their model host only to download missing speech models. If you explicitly select an iCloud-backed output directory, macOS may sync recordings and transcripts independently of the recorder.
-
-You are responsible for complying with applicable recording laws, workplace policies, and participant-consent requirements.
+Downloaded [WhisperKit](https://huggingface.co/argmaxinc/whisperkit-coreml) and [SpeakerKit](https://huggingface.co/argmaxinc/speakerkit-coreml) model artifacts are not distributed in this repository. Review their model cards and hosting terms before use or redistribution.

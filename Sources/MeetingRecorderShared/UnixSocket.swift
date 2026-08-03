@@ -121,7 +121,9 @@ public final class UnixSocketServer: @unchecked Sendable {
         guard descriptor < 0 else { return }
         let manager = FileManager.default
         try manager.createDirectory(at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if manager.fileExists(atPath: socketURL.path) { try manager.removeItem(at: socketURL) }
+        if Darwin.unlink(socketURL.path) != 0, errno != ENOENT {
+            throw UnixSocketError.system("unlink stale socket", errno)
+        }
 
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw UnixSocketError.system("socket", errno) }
@@ -157,7 +159,7 @@ public final class UnixSocketServer: @unchecked Sendable {
         source?.cancel()
         source = nil
         descriptor = -1
-        try? FileManager.default.removeItem(at: socketURL)
+        _ = Darwin.unlink(socketURL.path)
     }
 
     private func acceptConnections() {
